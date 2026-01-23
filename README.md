@@ -17,6 +17,8 @@ A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerh
 - **Automatic Token Refresh**: Handles OAuth2 token refresh automatically
 - **Configurable Update Interval**: Set how often to fetch new data (default: 10 minutes)
 - **Configurable Transaction Filters**: Filter bookings by transaction state
+- **Send Message Service**: Send messages to customers through the marketplace
+- **Booking Confirmed Events**: Fire Home Assistant events when bookings are confirmed
 
 ## Installation
 
@@ -204,6 +206,140 @@ automation:
           message: >
             Trailer pickup today for {{ state_attr('sensor.local_trailer_hire_next_booking_customer', 'first_name') }}
 ```
+
+### Auto-message customer on booking confirmation
+
+This automation sends an automatic welcome message to customers when their booking is confirmed:
+
+```yaml
+automation:
+  - alias: "Auto-message on Booking Confirmation"
+    description: "Send a welcome message when a booking is confirmed"
+    trigger:
+      - platform: event
+        event_type: localtrailerhire_booking_confirmed
+    action:
+      - service: localtrailerhire.send_message
+        data:
+          transaction_id: "{{ trigger.event.data.transaction_id }}"
+          message: >
+            Hi {{ trigger.event.data.customer_first_name }},
+
+            Thank you for booking the {{ trigger.event.data.listing_title }}!
+
+            Your booking is confirmed for pickup. Please remember to bring:
+            - Valid driver's licence
+            - The payment card used for the booking
+
+            If you have any questions, please don't hesitate to reach out.
+
+            See you soon!
+      - service: notify.mobile_app
+        data:
+          title: "Auto-message sent"
+          message: >
+            Welcome message sent to {{ trigger.event.data.customer_first_name }}
+            for {{ trigger.event.data.listing_title }}
+```
+
+### Send message with pickup instructions
+
+```yaml
+automation:
+  - alias: "Send Pickup Instructions"
+    description: "Send pickup instructions the day before booking starts"
+    trigger:
+      - platform: time
+        at: "18:00:00"
+    condition:
+      - condition: template
+        value_template: >
+          {% set bookings = state_attr('sensor.local_trailer_hire_upcoming_bookings', 'bookings') %}
+          {% if bookings %}
+            {% set tomorrow = (now() + timedelta(days=1)).date() %}
+            {% for booking in bookings %}
+              {% set start = as_datetime(booking.booking_start).date() %}
+              {% if start == tomorrow %}
+                true
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          false
+    action:
+      - repeat:
+          for_each: >
+            {% set bookings = state_attr('sensor.local_trailer_hire_upcoming_bookings', 'bookings') %}
+            {% set tomorrow = (now() + timedelta(days=1)).date() %}
+            {% set tomorrow_bookings = [] %}
+            {% for booking in bookings %}
+              {% set start = as_datetime(booking.booking_start).date() %}
+              {% if start == tomorrow %}
+                {% set tomorrow_bookings = tomorrow_bookings + [booking] %}
+              {% endif %}
+            {% endfor %}
+            {{ tomorrow_bookings }}
+          sequence:
+            - service: localtrailerhire.send_message
+              data:
+                transaction_id: "{{ repeat.item.transaction_id }}"
+                message: >
+                  Hi {{ repeat.item.customer_first_name }},
+
+                  Just a reminder that your booking for {{ repeat.item.listing_title }}
+                  starts tomorrow!
+
+                  Pickup location: [Your address here]
+                  Pickup time: After 9:00 AM
+
+                  Please bring your driver's licence for verification.
+
+                  See you tomorrow!
+```
+
+## Services
+
+### `localtrailerhire.send_message`
+
+Send a message to a customer for a specific booking transaction.
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the transaction
+- `message` (required): The message content to send
+
+**Example:**
+```yaml
+service: localtrailerhire.send_message
+data:
+  transaction_id: "12345678-1234-1234-1234-123456789abc"
+  message: "Thank you for your booking! Your trailer is ready for pickup."
+```
+
+## Events
+
+### `localtrailerhire_booking_confirmed`
+
+Fired when a booking transitions to a confirmed state (payment confirmed, instant booking, or refund period expired) and the booking start date is in the future.
+
+**Event Data:**
+- `transaction_id`: The booking transaction ID
+- `last_transition`: The transition that triggered this event
+- `customer_first_name`: Customer's first name
+- `customer_last_name`: Customer's last name
+- `customer_display_name`: Customer's display name
+- `listing_title`: The listing/trailer name
+- `listing_id`: The listing UUID
+- `booking_start`: Booking start timestamp
+- `booking_end`: Booking end timestamp
+- `payout_total_aud`: Payout amount in AUD
+- `timestamp`: When the event was fired
+
+### `localtrailerhire_message_sent`
+
+Fired when a message is successfully sent via the `send_message` service.
+
+**Event Data:**
+- `transaction_id`: The transaction the message was sent to
+- `timestamp`: When the message was sent
 
 ## Troubleshooting
 

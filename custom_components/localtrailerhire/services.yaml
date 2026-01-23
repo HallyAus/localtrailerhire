@@ -1,0 +1,19 @@
+send_message:
+  name: Send Message
+  description: Send a message to a customer for a specific booking transaction.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      description: The UUID of the transaction to send the message to.
+      required: true
+      example: "12345678-1234-1234-1234-123456789abc"
+      selector:
+        text:
+    message:
+      name: Message
+      description: The message content to send to the customer.
+      required: true
+      example: "Thank you for your booking! Your trailer is ready for pickup."
+      selector:
+        text:
+          multiline: true
