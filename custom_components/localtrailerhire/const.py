@@ -21,12 +21,23 @@ TOKEN_REFRESH_BUFFER: Final = 60
 DEFAULT_PER_PAGE: Final = 100
 
 # Default transitions to query (configurable)
-DEFAULT_LAST_TRANSITIONS: Final = [
+# Empty list = no filter, fetch ALL transactions and determine upcoming by dates only
+# This is the recommended default to avoid missing valid bookings
+DEFAULT_LAST_TRANSITIONS: Final = []
+
+# Broad transition list for users who want to filter (optional)
+# Includes common booking states - use this if API returns too many irrelevant transactions
+BROAD_TRANSITIONS: Final = [
     "transition/accept",
     "transition/complete",
     "transition/confirm-payment",
+    "transition/confirm-payment-instant-booking",
+    "transition/expire-refundable-period",
     "transition/request-payment",
     "transition/request-payment-after-enquiry",
+    "transition/mark-delivered",
+    "transition/mark-received",
+    "transition/mark-received-from-purchased",
 ]
 
 # Configuration keys

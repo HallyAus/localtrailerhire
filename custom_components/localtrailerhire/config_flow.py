@@ -122,13 +122,14 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if self._password:
                 data[CONF_PASSWORD] = self._password
 
+            # Get transitions - empty string means no filter (fetch all)
+            transitions_input = user_input.get(CONF_LAST_TRANSITIONS, "").strip()
+
             options = {
                 CONF_SCAN_INTERVAL: user_input.get(
                     CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                 ),
-                CONF_LAST_TRANSITIONS: user_input.get(
-                    CONF_LAST_TRANSITIONS, ",".join(DEFAULT_LAST_TRANSITIONS)
-                ),
+                CONF_LAST_TRANSITIONS: transitions_input,
             }
 
             return self.async_create_entry(
@@ -136,6 +137,9 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=data,
                 options=options,
             )
+
+        # Default is empty = no filter, determine upcoming by dates only
+        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
 
         return self.async_show_form(
             step_id="options",
@@ -149,7 +153,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     vol.Optional(
                         CONF_LAST_TRANSITIONS,
-                        default=",".join(DEFAULT_LAST_TRANSITIONS),
+                        default=default_transitions,
                     ): str,
                 }
             ),
@@ -238,13 +242,19 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle options flow."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Normalize transitions - strip whitespace
+            data = dict(user_input)
+            if CONF_LAST_TRANSITIONS in data:
+                data[CONF_LAST_TRANSITIONS] = data[CONF_LAST_TRANSITIONS].strip()
+            return self.async_create_entry(title="", data=data)
 
         current_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
+        # Default is empty string = no filter
+        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
         current_transitions = self.config_entry.options.get(
-            CONF_LAST_TRANSITIONS, ",".join(DEFAULT_LAST_TRANSITIONS)
+            CONF_LAST_TRANSITIONS, default_transitions
         )
 
         return self.async_show_form(

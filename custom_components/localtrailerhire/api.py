@@ -281,13 +281,31 @@ class SharetribeFlexAPI:
     ) -> list[dict[str, Any]]:
         """Fetch all transactions matching the criteria.
 
-        Upcoming bookings are those where booking_end >= now (UTC).
-        If booking dates are missing, the transaction is kept with is_upcoming="unknown".
+        Upcoming bookings are determined SOLELY by booking dates:
+            upcoming = booking_end >= now (UTC)
+
+        The last_transitions filter is OPTIONAL:
+        - If empty/None: fetch ALL provider transactions (recommended)
+        - If provided: only fetch transactions with those last transitions
+
+        Booking dates are the authoritative source for "upcoming" status,
+        NOT the transition state.
         """
         await self._ensure_valid_token()
 
         if last_transitions is None:
             last_transitions = DEFAULT_LAST_TRANSITIONS
+
+        # Log filter status
+        if last_transitions:
+            _LOGGER.debug(
+                "Using transition filter: %s", last_transitions
+            )
+        else:
+            _LOGGER.info(
+                "No transition filter - fetching ALL transactions, "
+                "will determine upcoming by booking dates only"
+            )
 
         all_transactions: list[dict[str, Any]] = []
         all_included: list[dict[str, Any]] = []
