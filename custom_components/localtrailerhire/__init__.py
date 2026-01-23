@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -125,8 +125,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
         async def async_send_message(call: ServiceCall) -> None:
             """Handle send_message service call."""
-            transaction_id = call.data["transaction_id"]
-            message = call.data["message"]
+            transaction_id = call.data.get("transaction_id", "")
+            message = call.data.get("message", "")
+
+            # Validate inputs
+            if not transaction_id or not isinstance(transaction_id, str):
+                raise HomeAssistantError(
+                    "transaction_id is required and must be a non-empty string"
+                )
+
+            # Basic UUID format validation (should be 36 chars with hyphens)
+            transaction_id = transaction_id.strip()
+            if len(transaction_id) != 36 or transaction_id.count("-") != 4:
+                raise HomeAssistantError(
+                    f"transaction_id must be a valid UUID format (got: {transaction_id[:20]}...)"
+                )
+
+            if not message or not isinstance(message, str):
+                raise HomeAssistantError(
+                    "message is required and must be a non-empty string"
+                )
+
+            message = message.strip()
+            if not message:
+                raise HomeAssistantError("message cannot be empty or whitespace only")
 
             # Find the API client (use first available entry)
             api_client = None
@@ -137,7 +159,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             if not api_client:
                 _LOGGER.error("No API client available for send_message service")
-                raise ValueError("No API client available")
+                raise HomeAssistantError(
+                    "No Local Trailer Hire integration configured"
+                )
 
             try:
                 await api_client.send_message(transaction_id, message)
@@ -153,9 +177,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info("Message sent to transaction %s", transaction_id)
 
+            except AuthenticationError as err:
+                _LOGGER.error("Authentication failed when sending message: %s", err)
+                raise HomeAssistantError(
+                    "Authentication failed. Please reconfigure the integration."
+                ) from err
+
             except APIError as err:
                 _LOGGER.error("Failed to send message: %s", err)
-                raise
+                raise HomeAssistantError(
+                    f"Failed to send message: {err}"
+                ) from err
+
+            except Exception as err:
+                _LOGGER.exception("Unexpected error sending message: %s", err)
+                raise HomeAssistantError(
+                    f"Unexpected error: {type(err).__name__}"
+                ) from err
 
         hass.services.async_register(
             DOMAIN,
