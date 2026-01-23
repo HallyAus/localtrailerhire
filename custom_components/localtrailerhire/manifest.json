@@ -1,0 +1,12 @@
+{
+  "domain": "localtrailerhire",
+  "name": "Local Trailer Hire",
+  "codeowners": ["@HallyAus"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/HallyAus/localtrailerhire",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/HallyAus/localtrailerhire/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

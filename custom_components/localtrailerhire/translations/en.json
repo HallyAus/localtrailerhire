@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Local Trailer Hire",
+        "description": "Enter your Sharetribe Flex credentials. You can use either username/password OR a refresh token.",
+        "data": {
+          "client_id": "Client ID",
+          "username": "Username (email)",
+          "password": "Password",
+          "refresh_token": "Refresh Token (alternative to password)"
+        },
+        "data_description": {
+          "client_id": "Your Sharetribe Flex application client ID",
+          "username": "Your marketplace account email",
+          "password": "Your marketplace account password",
+          "refresh_token": "Use this instead of username/password for token-based auth"
+        }
+      },
+      "options": {
+        "title": "Configure Options",
+        "description": "Configure update interval and transaction filters.",
+        "data": {
+          "scan_interval": "Update interval (minutes)",
+          "last_transitions": "Transaction transitions to include (comma-separated)"
+        },
+        "data_description": {
+          "scan_interval": "How often to fetch new booking data (1-60 minutes)",
+          "last_transitions": "Only show transactions with these last transitions"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Authentication has expired. Please re-enter your credentials.",
+        "data": {
+          "client_id": "Client ID",
+          "username": "Username (email)",
+          "password": "Password",
+          "refresh_token": "Refresh Token"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid authentication credentials",
+      "missing_credentials": "Please provide either username/password OR a refresh token",
+      "unknown": "An unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This account is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Local Trailer Hire",
+        "description": "Adjust your integration settings.",
+        "data": {
+          "scan_interval": "Update interval (minutes)",
+          "last_transitions": "Transaction transitions to include"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "bookings": {
+        "name": "Upcoming Bookings"
+      },
+      "next_booking_start": {
+        "name": "Next Booking Start"
+      },
+      "next_booking_end": {
+        "name": "Next Booking End"
+      },
+      "next_booking_customer": {
+        "name": "Next Booking Customer"
+      },
+      "next_booking_payout": {
+        "name": "Next Booking Payout"
+      }
+    }
+  }
+}
