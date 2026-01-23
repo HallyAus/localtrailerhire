@@ -17,9 +17,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AuthenticationError, validate_credentials
 from .const import (
     CONF_CLIENT_ID,
+    CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -130,6 +132,9 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                 ),
                 CONF_LAST_TRANSITIONS: transitions_input,
+                CONF_INCLUDE_SENSITIVE: user_input.get(
+                    CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
+                ),
             }
 
             return self.async_create_entry(
@@ -155,6 +160,10 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_LAST_TRANSITIONS,
                         default=default_transitions,
                     ): str,
+                    vol.Optional(
+                        CONF_INCLUDE_SENSITIVE,
+                        default=DEFAULT_INCLUDE_SENSITIVE,
+                    ): bool,
                 }
             ),
         )
@@ -256,6 +265,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
         current_transitions = self.config_entry.options.get(
             CONF_LAST_TRANSITIONS, default_transitions
         )
+        current_sensitive = self.config_entry.options.get(
+            CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -270,6 +282,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_LAST_TRANSITIONS, default=current_transitions
                     ): str,
+                    vol.Optional(
+                        CONF_INCLUDE_SENSITIVE, default=current_sensitive
+                    ): bool,
                 }
             ),
         )

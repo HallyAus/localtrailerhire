@@ -16,9 +16,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import APIError, AuthenticationError, SharetribeFlexAPI
 from .const import (
     CONF_CLIENT_ID,
+    CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -44,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_LAST_TRANSITIONS, ",".join(DEFAULT_LAST_TRANSITIONS)
     )
     last_transitions = [t.strip() for t in transitions_str.split(",") if t.strip()]
+    include_sensitive = entry.options.get(CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE)
 
     # Create API client
     session = async_get_clientsession(hass)
@@ -75,6 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api=api,
         entry=entry,
         last_transitions=last_transitions,
+        include_sensitive=include_sensitive,
         update_interval=timedelta(minutes=scan_interval),
     )
 
@@ -116,6 +120,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         api: SharetribeFlexAPI,
         entry: ConfigEntry,
         last_transitions: list[str],
+        include_sensitive: bool,
         update_interval: timedelta,
     ) -> None:
         """Initialize the coordinator."""
@@ -128,12 +133,14 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self.api = api
         self.entry = entry
         self.last_transitions = last_transitions
+        self.include_sensitive = include_sensitive
 
     async def _async_update_data(self) -> list[dict[str, Any]]:
         """Fetch data from API."""
         try:
             bookings = await self.api.get_transactions(
-                last_transitions=self.last_transitions
+                last_transitions=self.last_transitions,
+                include_sensitive=self.include_sensitive,
             )
 
             # Update refresh token if it changed

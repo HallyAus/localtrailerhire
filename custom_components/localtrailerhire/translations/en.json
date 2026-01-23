@@ -22,11 +22,13 @@
         "description": "Configure update interval. Upcoming bookings are determined by booking dates (end date >= now).",
         "data": {
           "scan_interval": "Update interval (minutes)",
-          "last_transitions": "Transaction filter (optional, leave empty for all)"
+          "last_transitions": "Transaction filter (optional, leave empty for all)",
+          "include_sensitive_data": "Include sensitive customer details"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
-          "last_transitions": "Leave empty to fetch ALL transactions (recommended). Only use if you need to filter by specific transitions."
+          "last_transitions": "Leave empty to fetch ALL transactions (recommended). Only use if you need to filter by specific transitions.",
+          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked (e.g. 0412****78)."
         }
       },
       "reauth_confirm": {
@@ -57,11 +59,13 @@
         "description": "Upcoming bookings are determined by booking dates (end date >= now), not by transition state.",
         "data": {
           "scan_interval": "Update interval (minutes)",
-          "last_transitions": "Transaction filter (optional)"
+          "last_transitions": "Transaction filter (optional)",
+          "include_sensitive_data": "Include sensitive customer details"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
-          "last_transitions": "Leave empty to fetch ALL transactions and filter by dates only (recommended)"
+          "last_transitions": "Leave empty to fetch ALL transactions and filter by dates only (recommended)",
+          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked."
         }
       }
     }

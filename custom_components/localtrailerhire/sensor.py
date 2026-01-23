@@ -345,13 +345,19 @@ class NextBookingCustomerSensor(LocalTrailerHireBaseSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return customer details."""
+        """Return customer details including structured customer object."""
         booking = self._next_booking
         if not booking:
             return {"has_booking": False}
 
         attrs: dict[str, Any] = {"has_booking": True}
 
+        # Include full structured customer object if present
+        customer_obj = booking.get("customer")
+        if customer_obj:
+            attrs["customer"] = customer_obj
+
+        # Legacy flat attributes for backwards compatibility
         if booking.get("customer_first_name"):
             attrs["first_name"] = booking["customer_first_name"]
         if booking.get("customer_last_name"):

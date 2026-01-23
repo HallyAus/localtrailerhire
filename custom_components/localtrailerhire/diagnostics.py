@@ -23,6 +23,14 @@ TO_REDACT = {
     "pickup_address",
     "customerPhoneNumber",
     "phoneNumber",
+    # Driver licence fields
+    "driversLicenceNumber",
+    "driversLicenceIssuedBy",
+    "driversLicenceExpiryDate",
+    "licence_number",
+    # Address fields
+    "residentialAddress",
+    "building",
 }
 
 
@@ -76,6 +84,7 @@ async def async_get_config_entry_diagnostics(
                 else None
             ),
             "last_transitions_filter": coordinator.last_transitions,
+            "include_sensitive_data": getattr(coordinator, "include_sensitive", False),
             "bookings_count": len(coordinator.data) if coordinator.data else 0,
         }
 
@@ -110,6 +119,24 @@ def _redact_booking(booking: dict[str, Any]) -> dict[str, Any]:
     redacted = {}
     for key, value in booking.items():
         if key in TO_REDACT or "phone" in key.lower() or "address" in key.lower():
+            redacted[key] = "**REDACTED**"
+        elif key == "customer" and isinstance(value, dict):
+            # Redact nested customer object
+            redacted[key] = _redact_customer(value)
+        elif key == "licence" and isinstance(value, dict):
+            redacted[key] = "**REDACTED**"
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def _redact_customer(customer: dict[str, Any]) -> dict[str, Any]:
+    """Redact sensitive data from customer object."""
+    redacted = {}
+    for key, value in customer.items():
+        if key in ("phone", "licence"):
+            redacted[key] = "**REDACTED**"
+        elif key == "address" and isinstance(value, dict):
             redacted[key] = "**REDACTED**"
         else:
             redacted[key] = value
