@@ -278,6 +278,7 @@ class SharetribeFlexAPI:
         self,
         last_transitions: list[str] | None = None,
         per_page: int = DEFAULT_PER_PAGE,
+        include_sensitive: bool = False,
     ) -> list[dict[str, Any]]:
         """Fetch all transactions matching the criteria.
 
@@ -290,6 +291,12 @@ class SharetribeFlexAPI:
 
         Booking dates are the authoritative source for "upcoming" status,
         NOT the transition state.
+
+        Args:
+            last_transitions: Optional list of transitions to filter by.
+            per_page: Number of results per page.
+            include_sensitive: If True, include full licence and unmasked phone.
+                              If False, omit licence and mask phone numbers.
         """
         await self._ensure_valid_token()
 
@@ -397,7 +404,7 @@ class SharetribeFlexAPI:
 
         # Process transactions with detailed logging
         processed = self._process_transactions(
-            all_transactions, all_included, diagnostics
+            all_transactions, all_included, diagnostics, include_sensitive
         )
 
         # Store diagnostics for later retrieval
@@ -419,6 +426,7 @@ class SharetribeFlexAPI:
         transactions: list[dict[str, Any]],
         included: list[dict[str, Any]],
         diagnostics: dict[str, Any],
+        include_sensitive: bool = False,
     ) -> list[dict[str, Any]]:
         """Process raw transactions into structured booking data.
 
@@ -473,7 +481,7 @@ class SharetribeFlexAPI:
         for txn in transactions:
             try:
                 booking_data, debug_info = self._extract_booking_data(
-                    txn, bookings_map, customers_map, listings_map, now
+                    txn, bookings_map, customers_map, listings_map, now, include_sensitive
                 )
 
                 # Log first 3 transactions for debugging
@@ -528,11 +536,16 @@ class SharetribeFlexAPI:
         customers_map: dict[str, dict],
         listings_map: dict[str, dict],
         now: datetime,
+        include_sensitive: bool = False,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """Extract structured booking data from a transaction.
 
         Returns: (booking_data, debug_info)
         debug_info contains diagnostic information for logging.
+
+        Args:
+            include_sensitive: If True, include full licence and unmasked phone.
+                              If False, omit licence and mask phone numbers.
         """
         # Extract transaction ID (handle both formats)
         txn_id_obj = txn.get("id", {})
@@ -613,7 +626,7 @@ class SharetribeFlexAPI:
             debug_info["upcoming_reason"] = "booking_end_missing"
             # Keep as unknown (is_upcoming = None)
 
-        # Get customer details
+        # Get customer details from relationships
         customer_ref = relationships.get("customer", {}).get("data", {})
         if isinstance(customer_ref, dict):
             customer_id_obj = customer_ref.get("id", {})
@@ -642,35 +655,170 @@ class SharetribeFlexAPI:
         listing = listings_map.get(listing_id, {}) if listing_id else {}
         listing_attrs = listing.get("attributes", {})
 
-        # Extract protected data for pickup/address info
+        # Extract protected data for customer details
         protected_data = attrs.get("protectedData", {}) or {}
 
         # Extract payout and payin totals
         payout_total = attrs.get("payoutTotal", {})
         payin_total = attrs.get("payinTotal", {})
 
+        # Build structured customer object
+        customer_obj = self._build_customer_object(
+            customer_profile, protected_data, include_sensitive
+        )
+
+        # Legacy fields (kept for backwards compatibility)
+        raw_phone = (
+            protected_data.get("customerPhoneNumber")
+            or protected_data.get("phoneNumber")
+        )
+
         booking_data = {
             "transaction_id": txn_id,
             "booking_start": booking_start,
             "booking_end": booking_end,
+            # Legacy flat fields (deprecated, use customer object)
             "customer_first_name": customer_profile.get("firstName"),
             "customer_last_name": customer_profile.get("lastName"),
             "customer_display_name": customer_profile.get("displayName"),
-            "customer_phone": protected_data.get("customerPhoneNumber")
-            or protected_data.get("phoneNumber"),
+            "customer_phone": self._mask_phone(raw_phone) if not include_sensitive else raw_phone,
             "pickup_address": protected_data.get("pickupAddress")
             or protected_data.get("address"),
             "pickup_suburb": protected_data.get("suburb"),
+            # Structured customer object
+            "customer": customer_obj,
+            # Financial
             "payout_total_aud": self._format_money(payout_total),
             "payin_total_aud": self._format_money(payin_total),
+            # Transaction state
             "last_transition": attrs.get("lastTransition"),
             "state": booking_attrs.get("state"),
             "last_transitioned_at": attrs.get("lastTransitionedAt"),
+            # Listing
             "listing_title": listing_attrs.get("title"),
             "listing_id": listing_id,
         }
 
         return booking_data, debug_info
+
+    def _build_customer_object(
+        self,
+        profile: dict[str, Any],
+        protected_data: dict[str, Any],
+        include_sensitive: bool,
+    ) -> dict[str, Any]:
+        """Build structured customer object with optional sensitive data.
+
+        Args:
+            profile: Customer profile from user entity.
+            protected_data: Transaction protected data.
+            include_sensitive: Whether to include sensitive identifiers.
+
+        Returns:
+            Structured customer dict with nested licence and address.
+        """
+        first_name = profile.get("firstName")
+        last_name = profile.get("lastName")
+
+        # Phone number - mask if sensitive data disabled
+        raw_phone = (
+            protected_data.get("customerPhoneNumber")
+            or protected_data.get("phoneNumber")
+        )
+        phone = raw_phone if include_sensitive else self._mask_phone(raw_phone)
+
+        customer: dict[str, Any] = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+        }
+
+        # Address - building + residential address
+        building = protected_data.get("building")
+        residential_address = protected_data.get("residentialAddress")
+
+        if residential_address or building:
+            full_address = residential_address or ""
+            if building and full_address:
+                full_address = f"{building}, {full_address}"
+            elif building:
+                full_address = building
+
+            customer["address"] = {
+                "building": building,
+                "full": full_address if full_address else None,
+            }
+
+        # Licence - only include if sensitive data enabled
+        if include_sensitive:
+            licence_number = protected_data.get("driversLicenceNumber")
+            licence_state = protected_data.get("driversLicenceIssuedBy")
+            licence_expiry_obj = protected_data.get("driversLicenceExpiryDate")
+
+            if licence_number or licence_state or licence_expiry_obj:
+                expiry_iso, expiry_display = self._format_licence_expiry(licence_expiry_obj)
+                customer["licence"] = {
+                    "number": licence_number,
+                    "state": licence_state,
+                    "expiry_iso": expiry_iso,
+                    "expiry_display": expiry_display,
+                }
+
+        return customer
+
+    @staticmethod
+    def _mask_phone(phone: str | None) -> str | None:
+        """Mask a phone number, showing only first 4 and last 2 digits.
+
+        Example: 0412345678 -> 0412****78
+        """
+        if not phone:
+            return None
+
+        # Remove non-digit characters for processing
+        digits = "".join(c for c in phone if c.isdigit())
+
+        if len(digits) < 6:
+            # Too short to mask meaningfully
+            return "*" * len(phone) if phone else None
+
+        # Show first 4 and last 2 digits
+        masked = digits[:4] + "*" * (len(digits) - 6) + digits[-2:]
+        return masked
+
+    @staticmethod
+    def _format_licence_expiry(
+        expiry_obj: dict[str, Any] | None
+    ) -> tuple[str | None, str | None]:
+        """Format licence expiry date object to ISO and display strings.
+
+        Args:
+            expiry_obj: Dict with day, month, year keys.
+
+        Returns:
+            Tuple of (iso_date, display_date) e.g. ("2025-12-31", "31/12/2025")
+        """
+        if not expiry_obj or not isinstance(expiry_obj, dict):
+            return None, None
+
+        day = expiry_obj.get("day")
+        month = expiry_obj.get("month")
+        year = expiry_obj.get("year")
+
+        if not all([day, month, year]):
+            return None, None
+
+        try:
+            day_int = int(day)
+            month_int = int(month)
+            year_int = int(year)
+
+            iso_date = f"{year_int:04d}-{month_int:02d}-{day_int:02d}"
+            display_date = f"{day_int:02d}/{month_int:02d}/{year_int:04d}"
+
+            return iso_date, display_date
+        except (ValueError, TypeError):
+            return None, None
 
     @staticmethod
     def _format_money(money: dict[str, Any] | None) -> float | None:

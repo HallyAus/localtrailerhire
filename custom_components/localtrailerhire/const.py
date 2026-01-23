@@ -47,6 +47,10 @@ CONF_PASSWORD: Final = "password"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_LAST_TRANSITIONS: Final = "last_transitions"
+CONF_INCLUDE_SENSITIVE: Final = "include_sensitive_data"
+
+# Default for sensitive data (OFF for privacy)
+DEFAULT_INCLUDE_SENSITIVE: Final = False
 
 # Sensor names
 SENSOR_BOOKINGS: Final = "bookings"
