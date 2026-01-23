@@ -427,14 +427,17 @@ class SharetribeFlexAPI:
         transaction_id: str,
         message: str,
     ) -> dict[str, Any]:
-        """Send a message to a transaction.
+        """Send a message to a transaction using Transit format.
+
+        The Sharetribe Marketplace API requires Transit encoding for messages.
+        This matches the exact format used by the web application.
 
         Args:
             transaction_id: The UUID of the transaction to message.
             message: The message content to send.
 
         Returns:
-            The API response data.
+            Dict with success status and message_id if available.
 
         Raises:
             APIError: If the request fails.
@@ -462,56 +465,134 @@ class SharetribeFlexAPI:
         if not self._access_token:
             raise AuthenticationError("No access token available")
 
+        # Use Transit format exactly as the web app does
+        # Transit array format: ["^ ", "~:transactionId", "~u<uuid>", "~:content", "<message>"]
         headers = {
             "Authorization": f"Bearer {self._access_token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
+            "Accept": "application/transit+json",
+            "Content-Type": "application/transit+json",
         }
 
-        # Build payload per Sharetribe Marketplace API spec
-        payload = {
-            "transactionId": {"_sdkType": "uuid", "uuid": transaction_id},
-            "content": message,
-        }
+        # Build Transit payload as a JSON array (NOT object)
+        # "~u" prefix indicates UUID type in Transit
+        transit_payload = [
+            "^ ",
+            "~:transactionId",
+            f"~u{transaction_id}",
+            "~:content",
+            message,
+        ]
 
         _LOGGER.debug(
-            "Sending message API request: url=%s, transaction_id=%s",
+            "Sending message via Transit API: url=%s",
             MESSAGE_SEND_URL,
-            transaction_id,
         )
 
+        # Send with retry on 401
+        result = await self._send_message_with_retry(
+            headers=headers,
+            payload=transit_payload,
+            retry_auth=True,
+        )
+
+        return result
+
+    async def _send_message_with_retry(
+        self,
+        headers: dict[str, str],
+        payload: list,
+        retry_auth: bool = True,
+    ) -> dict[str, Any]:
+        """Send message request with automatic retry on 401.
+
+        Args:
+            headers: Request headers.
+            payload: Transit-encoded payload (JSON array).
+            retry_auth: Whether to retry on 401.
+
+        Returns:
+            Dict with success status.
+
+        Raises:
+            APIError: If the request fails.
+            AuthenticationError: If authentication fails after retry.
+        """
         try:
-            result, response_meta = await self._request_with_retry(
-                "POST",
+            async with self._session.post(
                 MESSAGE_SEND_URL,
+                json=payload,  # aiohttp will JSON-encode the array
                 headers=headers,
-                json=payload,
-            )
+            ) as response:
+                status_code = response.status
+                content_type = response.headers.get("Content-Type", "unknown")
 
-            _LOGGER.info(
-                "Message sent successfully: transaction_id=%s, status=%d",
-                transaction_id,
-                response_meta.get("status_code"),
-            )
+                _LOGGER.debug(
+                    "Message API response: status=%d, content_type=%s",
+                    status_code,
+                    content_type,
+                )
 
-            return result
+                # Handle 401 - refresh token and retry once
+                if status_code == 401 and retry_auth:
+                    _LOGGER.debug("Got 401 on message send, refreshing token")
+                    await self._refresh_access_token(force=True)
 
-        except APIError as err:
-            # Log additional context for debugging
+                    # Update authorization header with new token
+                    headers["Authorization"] = f"Bearer {self._access_token}"
+
+                    return await self._send_message_with_retry(
+                        headers=headers,
+                        payload=payload,
+                        retry_auth=False,  # Don't retry again
+                    )
+
+                # Handle rate limiting
+                if status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    _LOGGER.warning(
+                        "Rate limited on message send, waiting %d seconds",
+                        retry_after,
+                    )
+                    await asyncio.sleep(retry_after)
+                    return await self._send_message_with_retry(
+                        headers=headers,
+                        payload=payload,
+                        retry_auth=retry_auth,
+                    )
+
+                # Get response text for logging (sanitized)
+                response_text = await response.text()
+
+                # Handle errors
+                if status_code >= 400:
+                    # Sanitize response for logging (remove any tokens/secrets)
+                    safe_preview = response_text[:500] if response_text else "(empty)"
+                    _LOGGER.error(
+                        "Message send failed: status=%d, response=%s",
+                        status_code,
+                        safe_preview,
+                    )
+                    raise APIError(
+                        f"Message send failed with status {status_code}"
+                    )
+
+                # Success!
+                _LOGGER.info(
+                    "Message sent successfully: status=%d",
+                    status_code,
+                )
+
+                return {
+                    "success": True,
+                    "status_code": status_code,
+                }
+
+        except aiohttp.ClientError as err:
             _LOGGER.error(
-                "Message send failed: transaction_id=%s, error=%s",
-                transaction_id,
-                err,
+                "Network error sending message: %s",
+                type(err).__name__,
             )
-            raise
-
-        except Exception as err:
-            _LOGGER.exception(
-                "Unexpected error sending message: transaction_id=%s, error=%s",
-                transaction_id,
-                err,
-            )
-            raise APIError(f"Unexpected error: {type(err).__name__}") from err
+            raise APIError(f"Network error: {type(err).__name__}") from err
 
     def _process_transactions(
         self,
