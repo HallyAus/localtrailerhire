@@ -483,8 +483,13 @@ class SharetribeFlexAPI:
     ) -> list[dict[str, Any]]:
         """Process raw transactions into structured booking data.
 
-        Upcoming = booking_end >= now (UTC)
-        If booking dates are missing, keep as "unknown" but include in results.
+        Categorization rules:
+        - upcoming: booking_start >= now AND dates are known
+        - in_progress: booking_start <= now < booking_end AND dates are known
+        - past: booking_end < now AND dates are known
+        - unknown: booking_start or booking_end is null/missing
+
+        Returns ALL bookings with a 'category' field.
         """
         # Build lookup maps for included entities
         bookings_map: dict[str, dict] = {}
@@ -527,9 +532,18 @@ class SharetribeFlexAPI:
             len(listings_map),
         )
 
-        processed: list[dict[str, Any]] = []
+        all_bookings: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
         sample_count = 0
+
+        # Store now_utc in diagnostics for verification
+        diagnostics["now_utc"] = now.isoformat()
+
+        # Initialize category counts
+        diagnostics["upcoming_count"] = 0
+        diagnostics["in_progress_count"] = 0
+        diagnostics["past_count"] = 0
+        diagnostics["unknown_dates_count"] = 0
 
         for txn in transactions:
             try:
@@ -542,30 +556,36 @@ class SharetribeFlexAPI:
                     diagnostics["sample_transactions"].append(debug_info)
                     _LOGGER.info(
                         "Sample transaction [%d]: id=%s, last_transition=%s, "
-                        "booking_start=%s, booking_end=%s, is_upcoming=%s, reason=%s",
+                        "booking_start=%s, booking_end=%s, category=%s, reason=%s",
                         sample_count,
                         debug_info.get("transaction_id", "unknown"),
                         debug_info.get("last_transition", "unknown"),
                         debug_info.get("booking_start", "missing"),
                         debug_info.get("booking_end", "missing"),
-                        debug_info.get("is_upcoming", "unknown"),
-                        debug_info.get("upcoming_reason", "n/a"),
+                        debug_info.get("category", "unknown"),
+                        debug_info.get("category_reason", "n/a"),
                     )
                     sample_count += 1
 
                 if booking_data:
-                    is_upcoming = debug_info.get("is_upcoming")
+                    category = debug_info.get("category", "unknown")
+                    booking_data["category"] = category
+                    booking_data["dates_known"] = category != "unknown"
 
-                    if is_upcoming is True:
-                        diagnostics["total_upcoming"] += 1
-                        processed.append(booking_data)
-                    elif is_upcoming is False:
-                        diagnostics["total_past"] += 1
-                    else:  # is_upcoming is None/unknown
-                        diagnostics["total_unknown_dates"] += 1
-                        # Include transactions with unknown dates
-                        booking_data["_dates_unknown"] = True
-                        processed.append(booking_data)
+                    # Update category counts
+                    if category == "upcoming":
+                        diagnostics["upcoming_count"] += 1
+                        diagnostics["total_upcoming"] += 1  # Legacy
+                    elif category == "in_progress":
+                        diagnostics["in_progress_count"] += 1
+                    elif category == "past":
+                        diagnostics["past_count"] += 1
+                        diagnostics["total_past"] += 1  # Legacy
+                    else:  # unknown
+                        diagnostics["unknown_dates_count"] += 1
+                        diagnostics["total_unknown_dates"] += 1  # Legacy
+
+                    all_bookings.append(booking_data)
 
             except Exception as err:
                 _LOGGER.warning(
@@ -576,11 +596,11 @@ class SharetribeFlexAPI:
                 continue
 
         # Sort by booking start date (unknown dates go to end)
-        processed.sort(
+        all_bookings.sort(
             key=lambda x: x.get("booking_start") or "9999-12-31T00:00:00Z"
         )
 
-        return processed
+        return all_bookings
 
     def _extract_booking_data(
         self,
@@ -646,38 +666,76 @@ class SharetribeFlexAPI:
         debug_info["booking_end"] = booking_end
         debug_info["booking_found_in_included"] = bool(booking)
 
-        # Determine if upcoming
-        is_upcoming: bool | None = None
-        if booking_end:
+        # Categorize booking based on dates
+        # Categories: upcoming, in_progress, past, unknown
+        category = "unknown"
+        start_dt: datetime | None = None
+        end_dt: datetime | None = None
+
+        # Parse booking_start
+        if booking_start and isinstance(booking_start, str):
             try:
-                # Parse booking end time
+                start_str = booking_start
+                if start_str.endswith("Z"):
+                    start_str = start_str[:-1] + "+00:00"
+                start_dt = datetime.fromisoformat(start_str)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError) as err:
+                _LOGGER.warning(
+                    "Failed to parse booking_start for transaction %s: %s",
+                    txn_id, err
+                )
+
+        # Parse booking_end
+        if booking_end and isinstance(booking_end, str):
+            try:
                 end_str = booking_end
-                if isinstance(end_str, str):
-                    # Handle various ISO formats
-                    if end_str.endswith("Z"):
-                        end_str = end_str[:-1] + "+00:00"
-                    end_dt = datetime.fromisoformat(end_str)
-
-                    # Ensure timezone aware
-                    if end_dt.tzinfo is None:
-                        end_dt = end_dt.replace(tzinfo=timezone.utc)
-
-                    is_upcoming = end_dt >= now
-                    debug_info["is_upcoming"] = is_upcoming
-                    debug_info["upcoming_reason"] = (
-                        f"booking_end ({end_dt.isoformat()}) >= now ({now.isoformat()})"
-                        if is_upcoming
-                        else f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})"
-                    )
+                if end_str.endswith("Z"):
+                    end_str = end_str[:-1] + "+00:00"
+                end_dt = datetime.fromisoformat(end_str)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError) as err:
                 _LOGGER.warning(
                     "Failed to parse booking_end for transaction %s: %s",
                     txn_id, err
                 )
-                debug_info["upcoming_reason"] = f"parse_error: {err}"
+
+        # Determine category
+        if start_dt is not None and end_dt is not None:
+            # Both dates known
+            if start_dt >= now:
+                category = "upcoming"
+                debug_info["category_reason"] = (
+                    f"booking_start ({start_dt.isoformat()}) >= now ({now.isoformat()})"
+                )
+            elif end_dt < now:
+                category = "past"
+                debug_info["category_reason"] = (
+                    f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})"
+                )
+            else:
+                # start_dt < now <= end_dt
+                category = "in_progress"
+                debug_info["category_reason"] = (
+                    f"booking_start ({start_dt.isoformat()}) <= now ({now.isoformat()}) "
+                    f"< booking_end ({end_dt.isoformat()})"
+                )
         else:
-            debug_info["upcoming_reason"] = "booking_end_missing"
-            # Keep as unknown (is_upcoming = None)
+            # Missing dates
+            category = "unknown"
+            missing = []
+            if start_dt is None:
+                missing.append("booking_start")
+            if end_dt is None:
+                missing.append("booking_end")
+            debug_info["category_reason"] = f"missing dates: {', '.join(missing)}"
+
+        debug_info["category"] = category
+        # Legacy fields for backwards compatibility
+        debug_info["is_upcoming"] = category == "upcoming"
+        debug_info["upcoming_reason"] = debug_info.get("category_reason")
 
         # Get customer details from relationships
         customer_ref = relationships.get("customer", {}).get("data", {})

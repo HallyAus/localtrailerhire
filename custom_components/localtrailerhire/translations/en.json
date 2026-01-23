@@ -19,16 +19,18 @@
       },
       "options": {
         "title": "Configure Options",
-        "description": "Configure update interval. Upcoming bookings are determined by booking dates (end date >= now).",
+        "description": "Configure update interval and display options. Bookings are categorized by dates: upcoming (start >= now), in-progress (start <= now < end), past (end < now).",
         "data": {
           "scan_interval": "Update interval (minutes)",
           "last_transitions": "Transaction filter (optional, leave empty for all)",
-          "include_sensitive_data": "Include sensitive customer details"
+          "include_sensitive_data": "Include sensitive customer details",
+          "include_booking_lists": "Include booking lists in sensor attributes"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
           "last_transitions": "Leave empty to fetch ALL transactions (recommended). Only use if you need to filter by specific transitions.",
-          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked (e.g. 0412****78)."
+          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked (e.g. 0412****78).",
+          "include_booking_lists": "When enabled, sensor attributes include full booking lists. Disable to reduce state size."
         }
       },
       "reauth_confirm": {
@@ -56,24 +58,35 @@
     "step": {
       "init": {
         "title": "Configure Local Trailer Hire",
-        "description": "Upcoming bookings are determined by booking dates (end date >= now), not by transition state.",
+        "description": "Bookings are categorized by dates: upcoming (start >= now), in-progress (start <= now < end), past (end < now).",
         "data": {
           "scan_interval": "Update interval (minutes)",
           "last_transitions": "Transaction filter (optional)",
-          "include_sensitive_data": "Include sensitive customer details"
+          "include_sensitive_data": "Include sensitive customer details",
+          "include_booking_lists": "Include booking lists in sensor attributes"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
           "last_transitions": "Leave empty to fetch ALL transactions and filter by dates only (recommended)",
-          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked."
+          "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked.",
+          "include_booking_lists": "When enabled, sensor attributes include full booking lists. Disable to reduce state size."
         }
       }
     }
   },
   "entity": {
     "sensor": {
-      "bookings": {
+      "upcoming_bookings_count": {
         "name": "Upcoming Bookings"
+      },
+      "in_progress_bookings_count": {
+        "name": "In Progress Bookings"
+      },
+      "unknown_dates_count": {
+        "name": "Unknown Dates Bookings"
+      },
+      "total_bookings_count": {
+        "name": "Total Bookings"
       },
       "next_booking_start": {
         "name": "Next Booking Start"
@@ -86,6 +99,18 @@
       },
       "next_booking_payout": {
         "name": "Next Booking Payout"
+      },
+      "earnings_total_aud": {
+        "name": "Earnings Total"
+      },
+      "earnings_earned_aud": {
+        "name": "Earnings Earned"
+      },
+      "earnings_scheduled_aud": {
+        "name": "Earnings Scheduled"
+      },
+      "bookings_total_payin_aud": {
+        "name": "Bookings Total Payin"
       }
     }
   }

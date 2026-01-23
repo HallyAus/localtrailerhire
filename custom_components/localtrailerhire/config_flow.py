@@ -17,10 +17,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AuthenticationError, validate_credentials
 from .const import (
     CONF_CLIENT_ID,
+    CONF_INCLUDE_BOOKING_LISTS,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    DEFAULT_INCLUDE_BOOKING_LISTS,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_SCAN_INTERVAL,
@@ -135,6 +137,9 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_INCLUDE_SENSITIVE: user_input.get(
                     CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
                 ),
+                CONF_INCLUDE_BOOKING_LISTS: user_input.get(
+                    CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
+                ),
             }
 
             return self.async_create_entry(
@@ -163,6 +168,10 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_INCLUDE_SENSITIVE,
                         default=DEFAULT_INCLUDE_SENSITIVE,
+                    ): bool,
+                    vol.Optional(
+                        CONF_INCLUDE_BOOKING_LISTS,
+                        default=DEFAULT_INCLUDE_BOOKING_LISTS,
                     ): bool,
                 }
             ),
@@ -268,6 +277,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
         current_sensitive = self.config_entry.options.get(
             CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
         )
+        current_booking_lists = self.config_entry.options.get(
+            CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -284,6 +296,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
                     ): str,
                     vol.Optional(
                         CONF_INCLUDE_SENSITIVE, default=current_sensitive
+                    ): bool,
+                    vol.Optional(
+                        CONF_INCLUDE_BOOKING_LISTS, default=current_booking_lists
                     ): bool,
                 }
             ),
