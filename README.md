@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/HallyAus/localtrailerhire.svg)](https://github.com/HallyAus/localtrailerhire/releases)
 [![License](https://img.shields.io/github/license/HallyAus/localtrailerhire.svg)](LICENSE)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow.svg)](https://www.buymeacoffee.com/hallyaus)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow.svg)](https://www.buymeacoffee.com/printforge)
 
 A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerhire.com.au) (Sharetribe Flex marketplace) that displays booking information as sensors.
 
