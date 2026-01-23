@@ -21,13 +21,28 @@ from . import LocalTrailerHireCoordinator
 from .const import (
     ATTR_BOOKING_COUNT,
     ATTR_BOOKINGS,
+    ATTR_BREAKDOWN,
     ATTR_LAST_UPDATE,
+    CATEGORY_IN_PROGRESS,
+    CATEGORY_PAST,
+    CATEGORY_UNKNOWN,
+    CATEGORY_UPCOMING,
+    CONF_INCLUDE_BOOKING_LISTS,
+    DEFAULT_INCLUDE_BOOKING_LISTS,
     DOMAIN,
-    SENSOR_BOOKINGS,
+    PAYOUT_TRANSITIONS,
+    SENSOR_BOOKINGS_TOTAL_PAYIN,
+    SENSOR_EARNINGS_EARNED,
+    SENSOR_EARNINGS_SCHEDULED,
+    SENSOR_EARNINGS_TOTAL,
+    SENSOR_IN_PROGRESS_COUNT,
     SENSOR_NEXT_CUSTOMER,
     SENSOR_NEXT_END,
     SENSOR_NEXT_PAYOUT,
     SENSOR_NEXT_START,
+    SENSOR_TOTAL_COUNT,
+    SENSOR_UNKNOWN_DATES_COUNT,
+    SENSOR_UPCOMING_COUNT,
 )
 
 
@@ -42,11 +57,21 @@ async def async_setup_entry(
     ]
 
     entities: list[SensorEntity] = [
-        BookingsSensor(coordinator, entry),
+        # Count sensors
+        UpcomingBookingsCountSensor(coordinator, entry),
+        InProgressBookingsCountSensor(coordinator, entry),
+        UnknownDatesCountSensor(coordinator, entry),
+        TotalBookingsCountSensor(coordinator, entry),
+        # Next booking sensors
         NextBookingStartSensor(coordinator, entry),
         NextBookingEndSensor(coordinator, entry),
         NextBookingCustomerSensor(coordinator, entry),
         NextBookingPayoutSensor(coordinator, entry),
+        # Earnings sensors
+        EarningsTotalSensor(coordinator, entry),
+        EarningsEarnedSensor(coordinator, entry),
+        EarningsScheduledSensor(coordinator, entry),
+        BookingsTotalPayinSensor(coordinator, entry),
     ]
 
     async_add_entities(entities)
@@ -84,35 +109,56 @@ class LocalTrailerHireBaseSensor(
         )
 
     @property
-    def _bookings_list(self) -> list[dict[str, Any]]:
-        """Get the bookings list, defaulting to empty list."""
+    def _all_bookings(self) -> list[dict[str, Any]]:
+        """Get all bookings from coordinator."""
         if self.coordinator.data:
             return self.coordinator.data
         return []
 
     @property
-    def _next_booking(self) -> dict[str, Any] | None:
-        """Get the next booking (first in sorted list with valid dates)."""
-        bookings = self._bookings_list
-        if not bookings:
-            return None
-
-        # Find the first booking with valid start date (skip unknown date entries)
-        for booking in bookings:
-            if booking.get("booking_start") and not booking.get("_dates_unknown"):
-                return booking
-
-        # If all have unknown dates, return the first one anyway
-        return bookings[0] if bookings else None
+    def _upcoming_bookings(self) -> list[dict[str, Any]]:
+        """Get only upcoming bookings (category == 'upcoming')."""
+        return [b for b in self._all_bookings if b.get("category") == CATEGORY_UPCOMING]
 
     @property
-    def _booking_count(self) -> int:
-        """Get the count of bookings."""
-        return len(self._bookings_list)
+    def _in_progress_bookings(self) -> list[dict[str, Any]]:
+        """Get only in-progress bookings (category == 'in_progress')."""
+        return [b for b in self._all_bookings if b.get("category") == CATEGORY_IN_PROGRESS]
+
+    @property
+    def _past_bookings(self) -> list[dict[str, Any]]:
+        """Get only past bookings (category == 'past')."""
+        return [b for b in self._all_bookings if b.get("category") == CATEGORY_PAST]
+
+    @property
+    def _unknown_dates_bookings(self) -> list[dict[str, Any]]:
+        """Get only bookings with unknown dates (category == 'unknown')."""
+        return [b for b in self._all_bookings if b.get("category") == CATEGORY_UNKNOWN]
+
+    @property
+    def _next_upcoming_booking(self) -> dict[str, Any] | None:
+        """Get the next upcoming booking (soonest start among category == 'upcoming')."""
+        upcoming = self._upcoming_bookings
+        if not upcoming:
+            return None
+        # Already sorted by booking_start in API
+        return upcoming[0]
+
+    @property
+    def _include_booking_lists(self) -> bool:
+        """Check if booking lists should be included in attributes."""
+        return self._entry.options.get(
+            CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
+        )
 
 
-class BookingsSensor(LocalTrailerHireBaseSensor):
-    """Sensor for all upcoming bookings."""
+# =============================================================================
+# COUNT SENSORS
+# =============================================================================
+
+
+class UpcomingBookingsCountSensor(LocalTrailerHireBaseSensor):
+    """Sensor for count of upcoming bookings."""
 
     _attr_icon = "mdi:calendar-clock"
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -120,36 +166,147 @@ class BookingsSensor(LocalTrailerHireBaseSensor):
     def __init__(
         self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
     ) -> None:
-        """Initialize the bookings sensor."""
-        super().__init__(coordinator, entry, SENSOR_BOOKINGS, "Upcoming Bookings")
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_UPCOMING_COUNT, "Upcoming Bookings")
 
     @property
     def native_value(self) -> int:
-        """Return the number of upcoming bookings.
-
-        Always returns an integer (0 if no bookings).
-        """
-        return self._booking_count
+        """Return the count of upcoming bookings."""
+        return len(self._upcoming_bookings)
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available.
-
-        The bookings sensor is always available once coordinator has run,
-        even if there are no bookings.
-        """
+        """Return True if entity is available."""
         return self.coordinator.last_update_success
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return sensor attributes."""
         attrs: dict[str, Any] = {
-            ATTR_BOOKING_COUNT: self._booking_count,
+            ATTR_BOOKING_COUNT: len(self._upcoming_bookings),
             ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
         }
 
-        # Include full bookings list as attribute
-        attrs[ATTR_BOOKINGS] = self._bookings_list
+        # Include bookings list if enabled
+        if self._include_booking_lists:
+            attrs[ATTR_BOOKINGS] = self._upcoming_bookings
+
+        return attrs
+
+
+class InProgressBookingsCountSensor(LocalTrailerHireBaseSensor):
+    """Sensor for count of in-progress bookings."""
+
+    _attr_icon = "mdi:calendar-check"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator, entry, SENSOR_IN_PROGRESS_COUNT, "In Progress Bookings"
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the count of in-progress bookings."""
+        return len(self._in_progress_bookings)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return sensor attributes."""
+        attrs: dict[str, Any] = {
+            ATTR_BOOKING_COUNT: len(self._in_progress_bookings),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Include bookings list if enabled
+        if self._include_booking_lists:
+            attrs[ATTR_BOOKINGS] = self._in_progress_bookings
+
+        return attrs
+
+
+class UnknownDatesCountSensor(LocalTrailerHireBaseSensor):
+    """Sensor for count of bookings with unknown dates."""
+
+    _attr_icon = "mdi:calendar-question"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator, entry, SENSOR_UNKNOWN_DATES_COUNT, "Unknown Dates Bookings"
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the count of bookings with unknown dates."""
+        return len(self._unknown_dates_bookings)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return sensor attributes."""
+        attrs: dict[str, Any] = {
+            ATTR_BOOKING_COUNT: len(self._unknown_dates_bookings),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Include bookings list if enabled
+        if self._include_booking_lists:
+            attrs[ATTR_BOOKINGS] = self._unknown_dates_bookings
+
+        return attrs
+
+
+class TotalBookingsCountSensor(LocalTrailerHireBaseSensor):
+    """Sensor for total count of all fetched bookings."""
+
+    _attr_icon = "mdi:calendar-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_TOTAL_COUNT, "Total Bookings")
+
+    @property
+    def native_value(self) -> int:
+        """Return the total count of all fetched bookings."""
+        return len(self._all_bookings)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return sensor attributes with breakdown."""
+        attrs: dict[str, Any] = {
+            ATTR_BOOKING_COUNT: len(self._all_bookings),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_BREAKDOWN: {
+                "upcoming": len(self._upcoming_bookings),
+                "in_progress": len(self._in_progress_bookings),
+                "past": len(self._past_bookings),
+                "unknown_dates": len(self._unknown_dates_bookings),
+            },
+        }
 
         # Add diagnostics info if available
         api = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("api")
@@ -158,14 +315,21 @@ class BookingsSensor(LocalTrailerHireBaseSensor):
             if diag:
                 attrs["_diagnostics"] = {
                     "last_fetch": diag.get("request_time"),
+                    "now_utc": diag.get("now_utc"),
                     "total_fetched": diag.get("total_transactions_fetched", 0),
-                    "upcoming": diag.get("total_upcoming", 0),
-                    "past": diag.get("total_past", 0),
-                    "unknown_dates": diag.get("total_unknown_dates", 0),
+                    "upcoming_count": diag.get("upcoming_count", 0),
+                    "in_progress_count": diag.get("in_progress_count", 0),
+                    "past_count": diag.get("past_count", 0),
+                    "unknown_dates_count": diag.get("unknown_dates_count", 0),
                     "pages_fetched": len(diag.get("pages", [])),
                 }
 
         return attrs
+
+
+# =============================================================================
+# NEXT BOOKING SENSORS
+# =============================================================================
 
 
 class NextBookingStartSensor(LocalTrailerHireBaseSensor):
@@ -182,11 +346,8 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
 
     @property
     def native_value(self) -> datetime | None:
-        """Return the next booking start time.
-
-        Returns None only if there are no upcoming bookings.
-        """
-        booking = self._next_booking
+        """Return the next booking start time (from upcoming only)."""
+        booking = self._next_upcoming_booking
         if not booking:
             return None
 
@@ -195,12 +356,10 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
             return None
 
         try:
-            # Handle various ISO formats
             if isinstance(start_str, str):
                 if start_str.endswith("Z"):
                     start_str = start_str[:-1] + "+00:00"
                 dt = datetime.fromisoformat(start_str)
-                # Ensure timezone aware
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt
@@ -217,16 +376,16 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional attributes for the next booking."""
-        booking = self._next_booking
+        booking = self._next_upcoming_booking
         if not booking:
-            return {"has_booking": False}
+            return {"has_booking": False, "upcoming_count": 0}
 
         return {
             "has_booking": True,
+            "upcoming_count": len(self._upcoming_bookings),
             "transaction_id": booking.get("transaction_id"),
             "listing_title": booking.get("listing_title"),
             "customer_name": self._format_customer_name(booking),
-            "dates_unknown": booking.get("_dates_unknown", False),
         }
 
     @staticmethod
@@ -257,11 +416,8 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
 
     @property
     def native_value(self) -> datetime | None:
-        """Return the next booking end time.
-
-        Returns None only if there are no upcoming bookings or end date is missing.
-        """
-        booking = self._next_booking
+        """Return the next booking end time (from upcoming only)."""
+        booking = self._next_upcoming_booking
         if not booking:
             return None
 
@@ -270,12 +426,10 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
             return None
 
         try:
-            # Handle various ISO formats
             if isinstance(end_str, str):
                 if end_str.endswith("Z"):
                     end_str = end_str[:-1] + "+00:00"
                 dt = datetime.fromisoformat(end_str)
-                # Ensure timezone aware
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt
@@ -292,14 +446,13 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional attributes."""
-        booking = self._next_booking
+        booking = self._next_upcoming_booking
         if not booking:
             return {"has_booking": False}
 
         return {
             "has_booking": True,
             "transaction_id": booking.get("transaction_id"),
-            "dates_unknown": booking.get("_dates_unknown", False),
         }
 
 
@@ -318,11 +471,8 @@ class NextBookingCustomerSensor(LocalTrailerHireBaseSensor):
 
     @property
     def native_value(self) -> str | None:
-        """Return the next booking customer name.
-
-        Returns None only if there are no upcoming bookings.
-        """
-        booking = self._next_booking
+        """Return the next booking customer name (from upcoming only)."""
+        booking = self._next_upcoming_booking
         if not booking:
             return None
 
@@ -335,7 +485,6 @@ class NextBookingCustomerSensor(LocalTrailerHireBaseSensor):
         elif booking.get("customer_display_name"):
             return booking["customer_display_name"]
 
-        # If we have a booking but no customer name, return placeholder
         return "(Unknown Customer)"
 
     @property
@@ -346,7 +495,7 @@ class NextBookingCustomerSensor(LocalTrailerHireBaseSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return customer details including structured customer object."""
-        booking = self._next_booking
+        booking = self._next_upcoming_booking
         if not booking:
             return {"has_booking": False}
 
@@ -390,11 +539,8 @@ class NextBookingPayoutSensor(LocalTrailerHireBaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the next booking payout total.
-
-        Returns None only if there are no upcoming bookings or payout is missing.
-        """
-        booking = self._next_booking
+        """Return the next booking payout total (from upcoming only)."""
+        booking = self._next_upcoming_booking
         if not booking:
             return None
 
@@ -408,7 +554,7 @@ class NextBookingPayoutSensor(LocalTrailerHireBaseSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return financial details."""
-        booking = self._next_booking
+        booking = self._next_upcoming_booking
         if not booking:
             return {"has_booking": False}
 
@@ -426,3 +572,212 @@ class NextBookingPayoutSensor(LocalTrailerHireBaseSensor):
             attrs["transaction_id"] = booking["transaction_id"]
 
         return attrs
+
+
+# =============================================================================
+# EARNINGS SENSORS
+# =============================================================================
+
+
+class EarningsTotalSensor(LocalTrailerHireBaseSensor):
+    """Sensor for total payout across all fetched transactions."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:cash-multiple"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_EARNINGS_TOTAL, "Earnings Total")
+
+    @property
+    def native_value(self) -> float:
+        """Return the sum of all payout_total_aud where present."""
+        total = sum(
+            b.get("payout_total_aud", 0) or 0
+            for b in self._all_bookings
+            if b.get("payout_total_aud") is not None
+        )
+        return round(total, 2)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return breakdown of earnings."""
+        return {
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            "bookings_with_payout": sum(
+                1 for b in self._all_bookings if b.get("payout_total_aud") is not None
+            ),
+        }
+
+
+class EarningsEarnedSensor(LocalTrailerHireBaseSensor):
+    """Sensor for earned payout (past bookings or payout-completed transitions)."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:cash-check"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_EARNINGS_EARNED, "Earnings Earned")
+
+    @property
+    def native_value(self) -> float:
+        """Return sum of payout for past bookings or payout-completed transitions."""
+        earned = 0.0
+        for booking in self._all_bookings:
+            payout = booking.get("payout_total_aud")
+            if payout is None:
+                continue
+
+            category = booking.get("category")
+            last_transition = booking.get("last_transition")
+
+            # Count as earned if:
+            # 1. Category is past, OR
+            # 2. Last transition indicates payout/complete
+            if category == CATEGORY_PAST or last_transition in PAYOUT_TRANSITIONS:
+                earned += payout
+
+        return round(earned, 2)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return breakdown."""
+        past_count = 0
+        payout_transition_count = 0
+
+        for booking in self._all_bookings:
+            if booking.get("payout_total_aud") is None:
+                continue
+            category = booking.get("category")
+            last_transition = booking.get("last_transition")
+
+            if category == CATEGORY_PAST:
+                past_count += 1
+            elif last_transition in PAYOUT_TRANSITIONS:
+                payout_transition_count += 1
+
+        return {
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            "past_bookings_count": past_count,
+            "payout_transition_count": payout_transition_count,
+        }
+
+
+class EarningsScheduledSensor(LocalTrailerHireBaseSensor):
+    """Sensor for scheduled payout (upcoming or in-progress bookings)."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator, entry, SENSOR_EARNINGS_SCHEDULED, "Earnings Scheduled"
+        )
+
+    @property
+    def native_value(self) -> float:
+        """Return sum of payout for upcoming or in-progress bookings."""
+        scheduled = 0.0
+        for booking in self._all_bookings:
+            payout = booking.get("payout_total_aud")
+            if payout is None:
+                continue
+
+            category = booking.get("category")
+            if category in (CATEGORY_UPCOMING, CATEGORY_IN_PROGRESS):
+                scheduled += payout
+
+        return round(scheduled, 2)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return breakdown."""
+        upcoming_payout = sum(
+            b.get("payout_total_aud", 0) or 0
+            for b in self._upcoming_bookings
+            if b.get("payout_total_aud") is not None
+        )
+        in_progress_payout = sum(
+            b.get("payout_total_aud", 0) or 0
+            for b in self._in_progress_bookings
+            if b.get("payout_total_aud") is not None
+        )
+
+        return {
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            "upcoming_payout": round(upcoming_payout, 2),
+            "in_progress_payout": round(in_progress_payout, 2),
+            "upcoming_count": len(self._upcoming_bookings),
+            "in_progress_count": len(self._in_progress_bookings),
+        }
+
+
+class BookingsTotalPayinSensor(LocalTrailerHireBaseSensor):
+    """Sensor for total payin (customer payments) across all transactions."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:cash-plus"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator, entry, SENSOR_BOOKINGS_TOTAL_PAYIN, "Bookings Total Payin"
+        )
+
+    @property
+    def native_value(self) -> float:
+        """Return the sum of all payin_total_aud where present."""
+        total = sum(
+            b.get("payin_total_aud", 0) or 0
+            for b in self._all_bookings
+            if b.get("payin_total_aud") is not None
+        )
+        return round(total, 2)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return breakdown."""
+        return {
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            "bookings_with_payin": sum(
+                1 for b in self._all_bookings if b.get("payin_total_aud") is not None
+            ),
+        }

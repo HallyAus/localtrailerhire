@@ -19,6 +19,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import APIError, AuthenticationError, SharetribeFlexAPI
 from .const import (
+    CATEGORY_UPCOMING,
     CONF_CLIENT_ID,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
@@ -233,7 +234,13 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             # Detect newly confirmed bookings and fire events
             await self._detect_confirmed_bookings(bookings)
 
-            _LOGGER.debug("Fetched %d upcoming bookings", len(bookings))
+            # Log categorized counts
+            upcoming_count = sum(1 for b in bookings if b.get("category") == CATEGORY_UPCOMING)
+            _LOGGER.debug(
+                "Fetched %d total bookings (%d upcoming)",
+                len(bookings),
+                upcoming_count,
+            )
             return bookings
 
         except AuthenticationError as err:

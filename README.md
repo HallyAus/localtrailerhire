@@ -4,21 +4,29 @@
 [![GitHub Release](https://img.shields.io/github/release/HallyAus/localtrailerhire.svg)](https://github.com/HallyAus/localtrailerhire/releases)
 [![License](https://img.shields.io/github/license/HallyAus/localtrailerhire.svg)](LICENSE)
 
-A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerhire.com.au) (Sharetribe Flex marketplace) that displays upcoming bookings as sensors.
+A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerhire.com.au) (Sharetribe Flex marketplace) that displays booking information as sensors.
 
 ## Features
 
-- **Upcoming Bookings Sensor**: Shows the count of all upcoming bookings with full booking list as an attribute
-- **Next Booking Sensors**: Individual sensors for:
-  - Next booking start time
-  - Next booking end time
-  - Next booking customer name
-  - Next booking payout total
+- **Booking Count Sensors**: Separate sensors for upcoming, in-progress, unknown dates, and total bookings
+- **Next Booking Sensors**: Start time, end time, customer name, and payout for the next upcoming booking
+- **Earnings Sensors**: Track total earnings, earned (completed) and scheduled (future) payouts
 - **Automatic Token Refresh**: Handles OAuth2 token refresh automatically
 - **Configurable Update Interval**: Set how often to fetch new data (default: 10 minutes)
-- **Configurable Transaction Filters**: Filter bookings by transaction state
 - **Send Message Service**: Send messages to customers through the marketplace
 - **Booking Confirmed Events**: Fire Home Assistant events when bookings are confirmed
+- **Privacy Controls**: Option to mask sensitive customer data
+
+## Booking Categories
+
+Bookings are categorized based on their dates relative to the current time (UTC):
+
+| Category | Definition |
+|----------|------------|
+| **Upcoming** | `booking_start >= now` (future bookings that haven't started) |
+| **In Progress** | `booking_start <= now < booking_end` (currently active bookings) |
+| **Past** | `booking_end < now` (completed bookings) |
+| **Unknown** | Missing `booking_start` or `booking_end` dates |
 
 ## Installation
 
@@ -83,57 +91,117 @@ You'll need the following from your Sharetribe Flex marketplace:
 ### Options
 
 - **Update Interval**: How often to fetch booking data (1-60 minutes, default: 10)
-- **Transaction Transitions**: Comma-separated list of transaction transitions to include
-
-Default transitions:
-```
-transition/accept,transition/complete,transition/confirm-payment,transition/request-payment,transition/request-payment-after-enquiry
-```
+- **Transaction Transitions**: Leave empty to fetch all transactions (recommended)
+- **Include Sensitive Data**: Show full driver licence and unmasked phone numbers
+- **Include Booking Lists**: Include full booking lists in sensor attributes (can be disabled to reduce state size)
 
 ## Sensors
 
-### `sensor.local_trailer_hire_upcoming_bookings`
+### Count Sensors
 
-Shows the count of upcoming bookings.
+#### `sensor.local_trailer_hire_upcoming_bookings`
+
+Count of upcoming bookings (where `booking_start >= now`).
 
 **Attributes:**
-- `bookings`: List of all upcoming bookings (see structure below)
+- `bookings`: List of upcoming bookings (if enabled)
 - `booking_count`: Number of upcoming bookings
 - `last_update`: Timestamp of last data refresh
 
-### `sensor.local_trailer_hire_next_booking_start`
+#### `sensor.local_trailer_hire_in_progress_bookings`
 
-The start time of the next booking (timestamp).
+Count of in-progress bookings (where `booking_start <= now < booking_end`).
 
 **Attributes:**
+- `bookings`: List of in-progress bookings (if enabled)
+- `booking_count`: Number of in-progress bookings
+- `last_update`: Timestamp of last data refresh
+
+#### `sensor.local_trailer_hire_unknown_dates_bookings`
+
+Count of bookings with missing date information.
+
+**Attributes:**
+- `bookings`: List of bookings with unknown dates (if enabled)
+- `booking_count`: Number of unknown date bookings
+- `last_update`: Timestamp of last data refresh
+
+#### `sensor.local_trailer_hire_total_bookings`
+
+Total count of all fetched bookings across all categories.
+
+**Attributes:**
+- `breakdown`: Object with counts for each category (upcoming, in_progress, past, unknown_dates)
+- `_diagnostics`: Debugging information from the API
+
+### Next Booking Sensors
+
+These sensors show information about the **next upcoming booking** (the soonest booking where `booking_start >= now`).
+
+#### `sensor.local_trailer_hire_next_booking_start`
+
+The start time of the next upcoming booking (timestamp).
+
+**Attributes:**
+- `has_booking`: Boolean indicating if there's an upcoming booking
+- `upcoming_count`: Total count of upcoming bookings
 - `transaction_id`: The booking transaction ID
 - `listing_title`: The listing/trailer name
 - `customer_name`: Customer's full name
 
-### `sensor.local_trailer_hire_next_booking_end`
+#### `sensor.local_trailer_hire_next_booking_end`
 
-The end time of the next booking (timestamp).
+The end time of the next upcoming booking (timestamp).
 
-### `sensor.local_trailer_hire_next_booking_customer`
+#### `sensor.local_trailer_hire_next_booking_customer`
 
-The customer name for the next booking.
+The customer name for the next upcoming booking.
 
 **Attributes:**
+- `customer`: Structured customer object with nested data
 - `first_name`: Customer's first name
 - `last_name`: Customer's last name
-- `phone`: Customer's phone number (if available)
+- `phone`: Customer's phone number (masked if sensitive data disabled)
 - `pickup_address`: Pickup address (if available)
 - `pickup_suburb`: Pickup suburb (if available)
 
-### `sensor.local_trailer_hire_next_booking_payout`
+#### `sensor.local_trailer_hire_next_booking_payout`
 
-The payout amount for the next booking (in AUD).
+The payout amount for the next upcoming booking (in AUD).
 
 **Attributes:**
 - `payin_total`: Total amount paid by customer
 - `last_transition`: Last transaction state transition
 - `state`: Current booking state
 - `last_transitioned_at`: Timestamp of last state change
+
+### Earnings Sensors
+
+#### `sensor.local_trailer_hire_earnings_total`
+
+Total payout across all fetched transactions (in AUD).
+
+#### `sensor.local_trailer_hire_earnings_earned`
+
+Payout from completed bookings (past bookings or those with payout-completed transitions).
+
+**Attributes:**
+- `past_bookings_count`: Number of past bookings with payout
+- `payout_transition_count`: Number of bookings with payout transitions
+
+#### `sensor.local_trailer_hire_earnings_scheduled`
+
+Payout from upcoming and in-progress bookings (in AUD).
+
+**Attributes:**
+- `upcoming_payout`: Payout from upcoming bookings
+- `in_progress_payout`: Payout from in-progress bookings
+- `upcoming_count`: Number of upcoming bookings
+- `in_progress_count`: Number of in-progress bookings
+
+#### `sensor.local_trailer_hire_bookings_total_payin`
+
+Total customer payments (payin) across all transactions (in AUD).
 
 ## Example Booking Data Structure
 
@@ -144,15 +212,26 @@ Each booking in the `bookings` attribute list contains:
   "transaction_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "booking_start": "2024-01-15T00:00:00.000Z",
   "booking_end": "2024-01-17T00:00:00.000Z",
+  "category": "upcoming",
+  "dates_known": true,
   "customer_first_name": "John",
   "customer_last_name": "Smith",
   "customer_display_name": "John S",
-  "customer_phone": "0412345678",
+  "customer_phone": "0412****78",
+  "customer": {
+    "first_name": "John",
+    "last_name": "Smith",
+    "phone": "0412****78",
+    "address": {
+      "building": "Unit 5",
+      "full": "Unit 5, 123 Main St, Sydney NSW 2000"
+    }
+  },
   "pickup_address": "123 Main St",
   "pickup_suburb": "Sydney",
   "payout_total_aud": 150.00,
   "payin_total_aud": 180.00,
-  "last_transition": "transition/complete",
+  "last_transition": "transition/confirm-payment",
   "state": "accepted",
   "last_transitioned_at": "2024-01-14T10:30:00.000Z",
   "listing_title": "6x4 Cage Trailer",
@@ -242,60 +321,6 @@ automation:
             for {{ trigger.event.data.listing_title }}
 ```
 
-### Send message with pickup instructions
-
-```yaml
-automation:
-  - alias: "Send Pickup Instructions"
-    description: "Send pickup instructions the day before booking starts"
-    trigger:
-      - platform: time
-        at: "18:00:00"
-    condition:
-      - condition: template
-        value_template: >
-          {% set bookings = state_attr('sensor.local_trailer_hire_upcoming_bookings', 'bookings') %}
-          {% if bookings %}
-            {% set tomorrow = (now() + timedelta(days=1)).date() %}
-            {% for booking in bookings %}
-              {% set start = as_datetime(booking.booking_start).date() %}
-              {% if start == tomorrow %}
-                true
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-          false
-    action:
-      - repeat:
-          for_each: >
-            {% set bookings = state_attr('sensor.local_trailer_hire_upcoming_bookings', 'bookings') %}
-            {% set tomorrow = (now() + timedelta(days=1)).date() %}
-            {% set tomorrow_bookings = [] %}
-            {% for booking in bookings %}
-              {% set start = as_datetime(booking.booking_start).date() %}
-              {% if start == tomorrow %}
-                {% set tomorrow_bookings = tomorrow_bookings + [booking] %}
-              {% endif %}
-            {% endfor %}
-            {{ tomorrow_bookings }}
-          sequence:
-            - service: localtrailerhire.send_message
-              data:
-                transaction_id: "{{ repeat.item.transaction_id }}"
-                message: >
-                  Hi {{ repeat.item.customer_first_name }},
-
-                  Just a reminder that your booking for {{ repeat.item.listing_title }}
-                  starts tomorrow!
-
-                  Pickup location: [Your address here]
-                  Pickup time: After 9:00 AM
-
-                  Please bring your driver's licence for verification.
-
-                  See you tomorrow!
-```
-
 ## Services
 
 ### `localtrailerhire.send_message`
@@ -351,9 +376,19 @@ Fired when a message is successfully sent via the `send_message` service.
 
 ### No Data Appearing
 
-- Verify you have upcoming bookings in your marketplace
-- Check the transaction transitions filter matches your booking states
+- Verify you have bookings in your marketplace
+- Check the diagnostics attribute on the Total Bookings sensor for API response details
 - Review Home Assistant logs for API errors
+
+### Incorrect Booking Counts
+
+The integration categorizes bookings by comparing dates to the current UTC time:
+- **Upcoming**: `booking_start >= now` (future start)
+- **In Progress**: `booking_start <= now < booking_end` (started but not ended)
+- **Past**: `booking_end < now` (already ended)
+- **Unknown**: Missing date fields
+
+Check the `_diagnostics` attribute on the Total Bookings sensor to see the `now_utc` timestamp used for categorization.
 
 ### Rate Limiting
 
@@ -365,6 +400,7 @@ This integration uses the Sharetribe Flex Marketplace API:
 
 - **Auth Endpoint**: `POST https://flex-api.sharetribe.com/v1/auth/token`
 - **Transactions Endpoint**: `GET https://flex-api.sharetribe.com/v1/api/transactions/query`
+- **Messages Endpoint**: `POST https://flex-api.sharetribe.com/v1/api/messages/send`
 
 The integration requests JSON responses (`Accept: application/json`) to avoid Transit encoding.
 
@@ -374,6 +410,7 @@ The integration requests JSON responses (`Accept: application/json`) to avoid Tr
 - Tokens are never logged
 - Refresh tokens are automatically renewed and stored
 - Password credentials are only used when refresh token is unavailable
+- Sensitive customer data (licence, phone) can be masked via options
 
 ## License
 

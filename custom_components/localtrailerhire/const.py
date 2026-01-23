@@ -52,17 +52,54 @@ CONF_INCLUDE_SENSITIVE: Final = "include_sensitive_data"
 # Default for sensitive data (OFF for privacy)
 DEFAULT_INCLUDE_SENSITIVE: Final = False
 
-# Sensor names
-SENSOR_BOOKINGS: Final = "bookings"
+# Default for including booking list attributes (ON by default)
+CONF_INCLUDE_BOOKING_LISTS: Final = "include_booking_lists"
+DEFAULT_INCLUDE_BOOKING_LISTS: Final = True
+
+# Sensor names - Count sensors
+SENSOR_UPCOMING_COUNT: Final = "upcoming_bookings_count"
+SENSOR_IN_PROGRESS_COUNT: Final = "in_progress_bookings_count"
+SENSOR_UNKNOWN_DATES_COUNT: Final = "unknown_dates_count"
+SENSOR_TOTAL_COUNT: Final = "total_bookings_count"
+
+# Sensor names - Next booking sensors
 SENSOR_NEXT_START: Final = "next_booking_start"
 SENSOR_NEXT_END: Final = "next_booking_end"
 SENSOR_NEXT_CUSTOMER: Final = "next_booking_customer"
 SENSOR_NEXT_PAYOUT: Final = "next_booking_payout"
 
+# Sensor names - Earnings sensors
+SENSOR_EARNINGS_TOTAL: Final = "earnings_total_aud"
+SENSOR_EARNINGS_EARNED: Final = "earnings_earned_aud"
+SENSOR_EARNINGS_SCHEDULED: Final = "earnings_scheduled_aud"
+SENSOR_BOOKINGS_TOTAL_PAYIN: Final = "bookings_total_payin_aud"
+
+# Legacy sensor name (deprecated, kept for migration)
+SENSOR_BOOKINGS: Final = "bookings"
+
+# Booking categories
+CATEGORY_UPCOMING: Final = "upcoming"
+CATEGORY_IN_PROGRESS: Final = "in_progress"
+CATEGORY_PAST: Final = "past"
+CATEGORY_UNKNOWN: Final = "unknown"
+
+# Transitions that indicate earned/completed payout
+PAYOUT_TRANSITIONS: Final = [
+    "transition/complete",
+    "transition/review-1-by-customer",
+    "transition/review-1-by-provider",
+    "transition/review-2-by-customer",
+    "transition/review-2-by-provider",
+    "transition/expire-review-period",
+    "transition/expire-customer-review-period",
+    "transition/expire-provider-review-period",
+]
+
 # Attributes
 ATTR_BOOKINGS: Final = "bookings"
 ATTR_BOOKING_COUNT: Final = "booking_count"
 ATTR_LAST_UPDATE: Final = "last_update"
+ATTR_BREAKDOWN: Final = "breakdown"
 
 # Message API endpoint
 MESSAGE_SEND_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/send"
