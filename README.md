@@ -403,7 +403,7 @@ This integration uses the Sharetribe Flex Marketplace API:
 - **Transactions Endpoint**: `GET https://flex-api.sharetribe.com/v1/api/transactions/query`
 - **Messages Endpoint**: `POST https://flex-api.sharetribe.com/v1/api/messages/send`
 
-The integration requests JSON responses (`Accept: application/json`) to avoid Transit encoding.
+The integration uses JSON format (`Accept: application/json`) for transactions queries and Transit format (`application/transit+json`) for sending messages, matching the Sharetribe web application behavior.
 
 ## Security
 
