@@ -19,14 +19,14 @@
       },
       "options": {
         "title": "Configure Options",
-        "description": "Configure update interval and transaction filters.",
+        "description": "Configure update interval. Upcoming bookings are determined by booking dates (end date >= now).",
         "data": {
           "scan_interval": "Update interval (minutes)",
-          "last_transitions": "Transaction transitions to include (comma-separated)"
+          "last_transitions": "Transaction filter (optional, leave empty for all)"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
-          "last_transitions": "Only show transactions with these last transitions"
+          "last_transitions": "Leave empty to fetch ALL transactions (recommended). Only use if you need to filter by specific transitions."
         }
       },
       "reauth_confirm": {
@@ -54,10 +54,14 @@
     "step": {
       "init": {
         "title": "Configure Local Trailer Hire",
-        "description": "Adjust your integration settings.",
+        "description": "Upcoming bookings are determined by booking dates (end date >= now), not by transition state.",
         "data": {
           "scan_interval": "Update interval (minutes)",
-          "last_transitions": "Transaction transitions to include"
+          "last_transitions": "Transaction filter (optional)"
+        },
+        "data_description": {
+          "scan_interval": "How often to fetch new booking data (1-60 minutes)",
+          "last_transitions": "Leave empty to fetch ALL transactions and filter by dates only (recommended)"
         }
       }
     }
