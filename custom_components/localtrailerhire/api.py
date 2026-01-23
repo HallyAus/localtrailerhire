@@ -440,7 +440,27 @@ class SharetribeFlexAPI:
             APIError: If the request fails.
             AuthenticationError: If authentication fails.
         """
-        await self._ensure_valid_token()
+        # Validate inputs
+        if not transaction_id:
+            raise APIError("transaction_id is required")
+        if not message:
+            raise APIError("message is required")
+
+        _LOGGER.debug(
+            "Preparing to send message: transaction_id=%s, content_length=%d",
+            transaction_id,
+            len(message),
+        )
+
+        # Ensure we have a valid token
+        try:
+            await self._ensure_valid_token()
+        except AuthenticationError as err:
+            _LOGGER.error("Failed to authenticate before sending message: %s", err)
+            raise
+
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
 
         headers = {
             "Authorization": f"Bearer {self._access_token}",
@@ -448,31 +468,50 @@ class SharetribeFlexAPI:
             "Content-Type": "application/json",
         }
 
+        # Build payload per Sharetribe Marketplace API spec
         payload = {
             "transactionId": {"_sdkType": "uuid", "uuid": transaction_id},
             "content": message,
         }
 
         _LOGGER.debug(
-            "Sending message to transaction: id=%s, content_length=%d",
-            transaction_id,
-            len(message),
-        )
-
-        result, response_meta = await self._request_with_retry(
-            "POST",
+            "Sending message API request: url=%s, transaction_id=%s",
             MESSAGE_SEND_URL,
-            headers=headers,
-            json=payload,
-        )
-
-        _LOGGER.info(
-            "Message sent successfully: transaction_id=%s, status=%d",
             transaction_id,
-            response_meta.get("status_code"),
         )
 
-        return result
+        try:
+            result, response_meta = await self._request_with_retry(
+                "POST",
+                MESSAGE_SEND_URL,
+                headers=headers,
+                json=payload,
+            )
+
+            _LOGGER.info(
+                "Message sent successfully: transaction_id=%s, status=%d",
+                transaction_id,
+                response_meta.get("status_code"),
+            )
+
+            return result
+
+        except APIError as err:
+            # Log additional context for debugging
+            _LOGGER.error(
+                "Message send failed: transaction_id=%s, error=%s",
+                transaction_id,
+                err,
+            )
+            raise
+
+        except Exception as err:
+            _LOGGER.exception(
+                "Unexpected error sending message: transaction_id=%s, error=%s",
+                transaction_id,
+                err,
+            )
+            raise APIError(f"Unexpected error: {type(err).__name__}") from err
 
     def _process_transactions(
         self,
