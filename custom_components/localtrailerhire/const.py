@@ -63,3 +63,24 @@ SENSOR_NEXT_PAYOUT: Final = "next_booking_payout"
 ATTR_BOOKINGS: Final = "bookings"
 ATTR_BOOKING_COUNT: Final = "booking_count"
 ATTR_LAST_UPDATE: Final = "last_update"
+
+# Message API endpoint
+MESSAGE_SEND_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/send"
+
+# Transitions that indicate a confirmed booking
+CONFIRMED_TRANSITIONS: Final = [
+    "transition/confirm-payment",
+    "transition/confirm-payment-instant-booking",
+    "transition/expire-refundable-period",
+]
+
+# Service names
+SERVICE_SEND_MESSAGE: Final = "send_message"
+
+# Event names
+EVENT_BOOKING_CONFIRMED: Final = "localtrailerhire_booking_confirmed"
+EVENT_MESSAGE_SENT: Final = "localtrailerhire_message_sent"
+
+# Storage keys
+STORAGE_KEY: Final = "localtrailerhire_data"
+STORAGE_VERSION: Final = 1

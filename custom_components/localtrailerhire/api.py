@@ -14,6 +14,7 @@ from .const import (
     AUTH_TOKEN_URL,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_PER_PAGE,
+    MESSAGE_SEND_URL,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
 )
@@ -420,6 +421,58 @@ class SharetribeFlexAPI:
         )
 
         return processed
+
+    async def send_message(
+        self,
+        transaction_id: str,
+        message: str,
+    ) -> dict[str, Any]:
+        """Send a message to a transaction.
+
+        Args:
+            transaction_id: The UUID of the transaction to message.
+            message: The message content to send.
+
+        Returns:
+            The API response data.
+
+        Raises:
+            APIError: If the request fails.
+            AuthenticationError: If authentication fails.
+        """
+        await self._ensure_valid_token()
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "transactionId": {"_sdkType": "uuid", "uuid": transaction_id},
+            "content": message,
+        }
+
+        _LOGGER.debug(
+            "Sending message to transaction: id=%s, content_length=%d",
+            transaction_id,
+            len(message),
+        )
+
+        result, response_meta = await self._request_with_retry(
+            "POST",
+            MESSAGE_SEND_URL,
+            headers=headers,
+            json=payload,
+        )
+
+        _LOGGER.info(
+            "Message sent successfully: transaction_id=%s, status=%d",
+            transaction_id,
+            response_meta.get("status_code"),
+        )
+
+        return result
 
     def _process_transactions(
         self,
