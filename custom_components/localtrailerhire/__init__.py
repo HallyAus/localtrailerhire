@@ -136,136 +136,137 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "stored_data": stored_data,
     }
 
-    # Register services (only once per domain)
-    if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
-        async def async_send_message(call: ServiceCall) -> None:
-            """Handle send_message service call."""
-            transaction_id = call.data.get("transaction_id", "")
-            message = call.data.get("message", "")
+    # Define service handlers
+    async def async_send_message(call: ServiceCall) -> None:
+        """Handle send_message service call."""
+        transaction_id = call.data.get("transaction_id", "")
+        message = call.data.get("message", "")
 
-            _LOGGER.info(
-                "SERVICE CALL: localtrailerhire.send_message - "
-                "transaction_id=%s, message_length=%d",
-                transaction_id[:8] + "..." if transaction_id else "EMPTY",
-                len(message) if message else 0,
+        _LOGGER.info(
+            "SERVICE CALL: localtrailerhire.send_message - "
+            "transaction_id=%s, message_length=%d",
+            transaction_id[:8] + "..." if transaction_id else "EMPTY",
+            len(message) if message else 0,
+        )
+
+        # Validate inputs
+        if not transaction_id or not isinstance(transaction_id, str):
+            raise HomeAssistantError(
+                "transaction_id is required and must be a non-empty string"
             )
 
-            # Validate inputs
-            if not transaction_id or not isinstance(transaction_id, str):
-                raise HomeAssistantError(
-                    "transaction_id is required and must be a non-empty string"
-                )
+        # Basic UUID format validation (should be 36 chars with hyphens)
+        transaction_id = transaction_id.strip()
+        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
+            raise HomeAssistantError(
+                f"transaction_id must be a valid UUID format (got: {transaction_id[:20]}...)"
+            )
 
-            # Basic UUID format validation (should be 36 chars with hyphens)
-            transaction_id = transaction_id.strip()
-            if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-                raise HomeAssistantError(
-                    f"transaction_id must be a valid UUID format (got: {transaction_id[:20]}...)"
-                )
+        if not message or not isinstance(message, str):
+            raise HomeAssistantError(
+                "message is required and must be a non-empty string"
+            )
 
-            if not message or not isinstance(message, str):
-                raise HomeAssistantError(
-                    "message is required and must be a non-empty string"
-                )
+        message = message.strip()
+        if not message:
+            raise HomeAssistantError("message cannot be empty or whitespace only")
 
-            message = message.strip()
-            if not message:
-                raise HomeAssistantError("message cannot be empty or whitespace only")
+        # Find the API client and coordinator (use first available entry)
+        api_client = None
+        coord = None
+        for entry_data in hass.data[DOMAIN].values():
+            if isinstance(entry_data, dict) and "api" in entry_data:
+                api_client = entry_data["api"]
+                coord = entry_data.get("coordinator")
+                break
 
-            # Find the API client and coordinator (use first available entry)
-            api_client = None
-            coord = None
-            for entry_data in hass.data[DOMAIN].values():
-                if isinstance(entry_data, dict) and "api" in entry_data:
-                    api_client = entry_data["api"]
-                    coord = entry_data.get("coordinator")
-                    break
+        if not api_client:
+            _LOGGER.error("No API client available for send_message service")
+            raise HomeAssistantError(
+                "No Local Trailer Hire integration configured"
+            )
 
-            if not api_client:
-                _LOGGER.error("No API client available for send_message service")
-                raise HomeAssistantError(
-                    "No Local Trailer Hire integration configured"
-                )
+        try:
+            await api_client.send_message(transaction_id, message)
 
-            try:
-                await api_client.send_message(transaction_id, message)
+            # Mark message as sent in storage (idempotent protection)
+            if coord:
+                await coord.mark_message_sent(transaction_id)
 
-                # Mark message as sent in storage (idempotent protection)
-                if coord:
-                    await coord.mark_message_sent(transaction_id)
+            # Fire event for successful message send
+            hass.bus.async_fire(
+                EVENT_MESSAGE_SENT,
+                {
+                    "transaction_id": transaction_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
-                # Fire event for successful message send
-                hass.bus.async_fire(
-                    EVENT_MESSAGE_SENT,
-                    {
-                        "transaction_id": transaction_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            _LOGGER.info(
+                "SERVICE RESULT: send_message SUCCESS - "
+                "transaction_id=%s, message_sent=True marked in storage",
+                transaction_id,
+            )
 
-                _LOGGER.info(
-                    "SERVICE RESULT: send_message SUCCESS - "
-                    "transaction_id=%s, message_sent=True marked in storage",
-                    transaction_id,
-                )
+        except AuthenticationError as err:
+            _LOGGER.error("Authentication failed when sending message: %s", err)
+            raise HomeAssistantError(
+                "Authentication failed. Please reconfigure the integration."
+            ) from err
 
-            except AuthenticationError as err:
-                _LOGGER.error("Authentication failed when sending message: %s", err)
-                raise HomeAssistantError(
-                    "Authentication failed. Please reconfigure the integration."
-                ) from err
+        except APIError as err:
+            _LOGGER.error("Failed to send message: %s", err)
+            raise HomeAssistantError(
+                f"Failed to send message: {err}"
+            ) from err
 
-            except APIError as err:
-                _LOGGER.error("Failed to send message: %s", err)
-                raise HomeAssistantError(
-                    f"Failed to send message: {err}"
-                ) from err
+        except Exception as err:
+            _LOGGER.exception("Unexpected error sending message: %s", err)
+            raise HomeAssistantError(
+                f"Unexpected error: {type(err).__name__}"
+            ) from err
 
-            except Exception as err:
-                _LOGGER.exception("Unexpected error sending message: %s", err)
-                raise HomeAssistantError(
-                    f"Unexpected error: {type(err).__name__}"
-                ) from err
+    async def async_refresh_now(call: ServiceCall) -> None:
+        """Force an immediate coordinator refresh."""
+        for entry_data in hass.data[DOMAIN].values():
+            if isinstance(entry_data, dict) and "coordinator" in entry_data:
+                coord = entry_data["coordinator"]
+                _LOGGER.info("Manual refresh triggered via service")
+                await coord.async_request_refresh()
 
-        async def async_refresh_now(call: ServiceCall) -> None:
-            """Force an immediate coordinator refresh."""
-            for entry_data in hass.data[DOMAIN].values():
-                if isinstance(entry_data, dict) and "coordinator" in entry_data:
-                    coord = entry_data["coordinator"]
-                    _LOGGER.info("Manual refresh triggered via service")
-                    await coord.async_request_refresh()
+    async def async_mark_message_sent(call: ServiceCall) -> None:
+        """Manually mark a transaction as having had a message sent."""
+        transaction_id = call.data.get("transaction_id", "").strip()
 
-        async def async_mark_message_sent(call: ServiceCall) -> None:
-            """Manually mark a transaction as having had a message sent."""
-            transaction_id = call.data.get("transaction_id", "").strip()
+        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
+            raise HomeAssistantError(
+                f"transaction_id must be a valid UUID format"
+            )
 
-            if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-                raise HomeAssistantError(
-                    f"transaction_id must be a valid UUID format"
-                )
+        for entry_data in hass.data[DOMAIN].values():
+            if isinstance(entry_data, dict) and "coordinator" in entry_data:
+                coord = entry_data["coordinator"]
+                await coord.mark_message_sent(transaction_id)
+                _LOGGER.info("Marked message_sent=true for transaction %s", transaction_id)
+                return
 
-            for entry_data in hass.data[DOMAIN].values():
-                if isinstance(entry_data, dict) and "coordinator" in entry_data:
-                    coord = entry_data["coordinator"]
-                    await coord.mark_message_sent(transaction_id)
-                    _LOGGER.info("Marked message_sent=true for transaction %s", transaction_id)
-                    return
+        raise HomeAssistantError("No coordinator available")
 
-            raise HomeAssistantError("No coordinator available")
+    async def async_fire_confirmed_events(call: ServiceCall) -> None:
+        """Re-scan and fire confirmed events for bookings in the last N hours."""
+        hours_back = call.data.get("hours_back", 24)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
-        async def async_fire_confirmed_events(call: ServiceCall) -> None:
-            """Re-scan and fire confirmed events for bookings in the last N hours."""
-            hours_back = call.data.get("hours_back", 24)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        for entry_data in hass.data[DOMAIN].values():
+            if isinstance(entry_data, dict) and "coordinator" in entry_data:
+                coord = entry_data["coordinator"]
+                await coord.fire_confirmed_events_since(cutoff, dry_run=False)
+                return
 
-            for entry_data in hass.data[DOMAIN].values():
-                if isinstance(entry_data, dict) and "coordinator" in entry_data:
-                    coord = entry_data["coordinator"]
-                    await coord.fire_confirmed_events_since(cutoff, dry_run=False)
-                    return
+        raise HomeAssistantError("No coordinator available")
 
-            raise HomeAssistantError("No coordinator available")
-
+    # Register services (each independently to handle upgrades)
+    if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
         hass.services.async_register(
             DOMAIN,
             SERVICE_SEND_MESSAGE,
@@ -273,6 +274,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=SERVICE_SEND_MESSAGE_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_NOW):
         hass.services.async_register(
             DOMAIN,
             SERVICE_REFRESH_NOW,
@@ -280,6 +282,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=vol.Schema({}),
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_MARK_MESSAGE_SENT):
         hass.services.async_register(
             DOMAIN,
             SERVICE_MARK_MESSAGE_SENT,
@@ -287,6 +290,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=SERVICE_MARK_MESSAGE_SENT_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_FIRE_CONFIRMED_EVENTS):
         hass.services.async_register(
             DOMAIN,
             SERVICE_FIRE_CONFIRMED_EVENTS,
