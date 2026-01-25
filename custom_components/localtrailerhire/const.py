@@ -105,14 +105,25 @@ ATTR_BREAKDOWN: Final = "breakdown"
 MESSAGE_SEND_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/send"
 
 # Transitions that indicate a confirmed booking
-CONFIRMED_TRANSITIONS: Final = [
+# These are the transitions where a booking has been confirmed/accepted
+CONFIRMED_TRANSITIONS: Final = frozenset([
     "transition/confirm-payment",
     "transition/confirm-payment-instant-booking",
+    "transition/confirm-payment-instant-book",  # Alternative naming
     "transition/expire-refundable-period",
-]
+    "transition/accept",
+    "transition/change-accepted-booking",
+    "transition/change-non-refundable-booking",
+])
+
+# Maximum pages to fetch (safety cap)
+MAX_PAGES: Final = 50
 
 # Service names
 SERVICE_SEND_MESSAGE: Final = "send_message"
+SERVICE_REFRESH_NOW: Final = "refresh_now"
+SERVICE_FIRE_CONFIRMED_EVENTS: Final = "fire_confirmed_events"
+SERVICE_MARK_MESSAGE_SENT: Final = "mark_message_sent"
 
 # Event names
 EVENT_BOOKING_CONFIRMED: Final = "localtrailerhire_booking_confirmed"

@@ -17,3 +17,35 @@ send_message:
       selector:
         text:
           multiline: true
+
+refresh_now:
+  name: Refresh Now
+  description: Force an immediate refresh of booking data from the API.
+
+mark_message_sent:
+  name: Mark Message Sent
+  description: Manually mark a transaction as having had a confirmation message sent. Use this to prevent duplicate messages after manual intervention.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      description: The UUID of the transaction to mark as message sent.
+      required: true
+      example: "12345678-1234-1234-1234-123456789abc"
+      selector:
+        text:
+
+fire_confirmed_events:
+  name: Fire Confirmed Events
+  description: Re-scan and fire booking_confirmed events for bookings in the last N hours. Useful for debugging automation triggers without sending messages.
+  fields:
+    hours_back:
+      name: Hours Back
+      description: How many hours back to scan for confirmed bookings (default 24).
+      required: false
+      default: 24
+      example: 24
+      selector:
+        number:
+          min: 1
+          max: 168
+          unit_of_measurement: hours
