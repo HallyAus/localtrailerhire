@@ -143,6 +143,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             transaction_id = call.data.get("transaction_id", "")
             message = call.data.get("message", "")
 
+            _LOGGER.info(
+                "SERVICE CALL: localtrailerhire.send_message - "
+                "transaction_id=%s, message_length=%d",
+                transaction_id[:8] + "..." if transaction_id else "EMPTY",
+                len(message) if message else 0,
+            )
+
             # Validate inputs
             if not transaction_id or not isinstance(transaction_id, str):
                 raise HomeAssistantError(
@@ -196,7 +203,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     },
                 )
 
-                _LOGGER.info("Message sent to transaction %s", transaction_id)
+                _LOGGER.info(
+                    "SERVICE RESULT: send_message SUCCESS - "
+                    "transaction_id=%s, message_sent=True marked in storage",
+                    transaction_id,
+                )
 
             except AuthenticationError as err:
                 _LOGGER.error("Authentication failed when sending message: %s", err)
@@ -603,6 +614,13 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                     "payout_total_aud": booking.get("payout_total_aud"),
                     "timestamp": now.isoformat(),
                 }
+                _LOGGER.info(
+                    "EVENT FIRED: %s - transaction_id=%s, customer=%s, listing=%s",
+                    EVENT_BOOKING_CONFIRMED,
+                    txn_id,
+                    booking.get("customer_first_name", "unknown"),
+                    booking.get("listing_title", "unknown")[:30],
+                )
                 self.hass.bus.async_fire(EVENT_BOOKING_CONFIRMED, event_data)
 
                 # Create persistent notification for debugging
@@ -724,7 +742,8 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 )
             else:
                 _LOGGER.info(
-                    "Re-firing event for txn=%s, transition=%s, at=%s",
+                    "REPLAY EVENT FIRED: %s - txn=%s, transition=%s, at=%s",
+                    EVENT_BOOKING_CONFIRMED,
                     txn_id,
                     last_transition,
                     last_transitioned_at,
