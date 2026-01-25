@@ -464,8 +464,8 @@ class SharetribeFlexAPI:
         if not message:
             raise APIError("message is required")
 
-        _LOGGER.debug(
-            "Preparing to send message: transaction_id=%s, content_length=%d",
+        _LOGGER.info(
+            "SEND_MESSAGE: Starting - transaction_id=%s, message_length=%d chars",
             transaction_id,
             len(message),
         )
@@ -593,8 +593,9 @@ class SharetribeFlexAPI:
 
                 # Success!
                 _LOGGER.info(
-                    "Message sent successfully: status=%d",
+                    "SEND_MESSAGE: SUCCESS - status=%d, transaction_id from payload=%s",
                     status_code,
+                    payload[2] if len(payload) > 2 else "unknown",  # ~u<uuid>
                 )
 
                 return {
