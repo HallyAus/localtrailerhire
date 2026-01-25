@@ -14,6 +14,7 @@ from .const import (
     AUTH_TOKEN_URL,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_PER_PAGE,
+    MAX_PAGES,
     MESSAGE_SEND_URL,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
@@ -396,7 +397,21 @@ class SharetribeFlexAPI:
             all_transactions.extend(data)
             all_included.extend(included)
 
-            if page >= total_pages or not data:
+            # Robust pagination: stop when we get fewer results than requested
+            # OR when we hit the safety cap on max pages
+            if len(data) < per_page:
+                _LOGGER.debug(
+                    "Pagination complete: received %d items (less than per_page=%d)",
+                    len(data),
+                    per_page,
+                )
+                break
+
+            if page >= MAX_PAGES:
+                _LOGGER.warning(
+                    "Hit MAX_PAGES safety limit (%d). There may be more transactions.",
+                    MAX_PAGES,
+                )
                 break
 
             page += 1
