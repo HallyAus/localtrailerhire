@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -14,7 +13,6 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import AuthenticationError, validate_credentials
 from .const import (
     CONF_CLIENT_ID,
     CONF_INCLUDE_BOOKING_LISTS,
@@ -53,7 +51,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._client_id = user_input[CONF_CLIENT_ID]
+            self._client_id = user_input.get(CONF_CLIENT_ID, "")
             self._username = user_input.get(CONF_USERNAME)
             self._password = user_input.get(CONF_PASSWORD)
             self._refresh_token = user_input.get(CONF_REFRESH_TOKEN)
@@ -65,9 +63,11 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not has_password_creds and not has_refresh_token:
                 errors["base"] = "missing_credentials"
             else:
-                # Validate credentials
-                session = async_get_clientsession(self.hass)
+                # Validate credentials - import here to avoid import-time issues
                 try:
+                    from .api import validate_credentials
+
+                    session = async_get_clientsession(self.hass)
                     success, new_refresh_token = await validate_credentials(
                         session=session,
                         client_id=self._client_id,
@@ -127,7 +127,9 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data[CONF_PASSWORD] = self._password
 
             # Get transitions - empty string means no filter (fetch all)
-            transitions_input = user_input.get(CONF_LAST_TRANSITIONS, "").strip()
+            transitions_input = user_input.get(CONF_LAST_TRANSITIONS, "")
+            if isinstance(transitions_input, str):
+                transitions_input = transitions_input.strip()
 
             options = {
                 CONF_SCAN_INTERVAL: user_input.get(
@@ -149,7 +151,9 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         # Default is empty = no filter, determine upcoming by dates only
-        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
+        default_transitions = (
+            ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
+        )
 
         return self.async_show_form(
             step_id="options",
@@ -190,12 +194,13 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            session = async_get_clientsession(self.hass)
-
             try:
+                from .api import validate_credentials
+
+                session = async_get_clientsession(self.hass)
                 success, new_refresh_token = await validate_credentials(
                     session=session,
-                    client_id=user_input[CONF_CLIENT_ID],
+                    client_id=user_input.get(CONF_CLIENT_ID, ""),
                     username=user_input.get(CONF_USERNAME),
                     password=user_input.get(CONF_PASSWORD),
                     refresh_token=user_input.get(CONF_REFRESH_TOKEN),
@@ -204,11 +209,11 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if success:
                     # Update the config entry
                     entry = self.hass.config_entries.async_get_entry(
-                        self.context["entry_id"]
+                        self.context.get("entry_id", "")
                     )
                     if entry:
                         data = dict(entry.data)
-                        data[CONF_CLIENT_ID] = user_input[CONF_CLIENT_ID]
+                        data[CONF_CLIENT_ID] = user_input.get(CONF_CLIENT_ID, "")
                         if new_refresh_token:
                             data[CONF_REFRESH_TOKEN] = new_refresh_token
                         if user_input.get(CONF_USERNAME):
@@ -249,37 +254,102 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for Local Trailer Hire."""
+    """Handle options flow for Local Trailer Hire.
+
+    This flow is bulletproof - it never crashes, never makes network calls,
+    and always returns a valid form even if data is corrupted.
+    """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+        """Initialize options flow.
+
+        No network calls or heavy operations here - just store the reference.
+        """
+        self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle options flow."""
+        """Handle options flow.
+
+        This method is wrapped in try/except to ensure we always return a form,
+        never crash the UI with a 500 error.
+        """
+        _LOGGER.debug(
+            "Options flow init for entry %s", self._config_entry.entry_id
+        )
+
+        try:
+            return await self._async_step_init_internal(user_input)
+        except Exception as err:
+            _LOGGER.exception("Options flow error: %s", err)
+            # Return a minimal working form even on error
+            return self.async_show_form(
+                step_id="init",
+                data_schema=vol.Schema(
+                    {
+                        vol.Optional(
+                            CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                        ): vol.All(
+                            vol.Coerce(int),
+                            vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
+                        ),
+                        vol.Optional(
+                            CONF_LAST_TRANSITIONS, default=""
+                        ): str,
+                        vol.Optional(
+                            CONF_INCLUDE_SENSITIVE, default=DEFAULT_INCLUDE_SENSITIVE
+                        ): bool,
+                        vol.Optional(
+                            CONF_INCLUDE_BOOKING_LISTS, default=DEFAULT_INCLUDE_BOOKING_LISTS
+                        ): bool,
+                    }
+                ),
+                errors={"base": "unknown"},
+            )
+
+    async def _async_step_init_internal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Internal options flow logic."""
         if user_input is not None:
-            # Normalize transitions - strip whitespace
+            # Normalize transitions - strip whitespace safely
             data = dict(user_input)
-            if CONF_LAST_TRANSITIONS in data:
-                data[CONF_LAST_TRANSITIONS] = data[CONF_LAST_TRANSITIONS].strip()
+            transitions = data.get(CONF_LAST_TRANSITIONS)
+            if transitions and isinstance(transitions, str):
+                data[CONF_LAST_TRANSITIONS] = transitions.strip()
+            elif transitions is None:
+                data[CONF_LAST_TRANSITIONS] = ""
+
             return self.async_create_entry(title="", data=data)
 
-        current_interval = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-        )
+        # Safely get current values with defaults - NEVER use direct indexing
+        options = self._config_entry.options or {}
+
+        current_interval = options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        # Ensure it's an int
+        try:
+            current_interval = int(current_interval)
+        except (ValueError, TypeError):
+            current_interval = DEFAULT_SCAN_INTERVAL
+
         # Default is empty string = no filter
-        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
-        current_transitions = self.config_entry.options.get(
-            CONF_LAST_TRANSITIONS, default_transitions
+        default_transitions = (
+            ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
         )
-        current_sensitive = self.config_entry.options.get(
-            CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
-        )
-        current_booking_lists = self.config_entry.options.get(
+        current_transitions = options.get(CONF_LAST_TRANSITIONS, default_transitions)
+        if not isinstance(current_transitions, str):
+            current_transitions = default_transitions
+
+        current_sensitive = options.get(CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE)
+        if not isinstance(current_sensitive, bool):
+            current_sensitive = DEFAULT_INCLUDE_SENSITIVE
+
+        current_booking_lists = options.get(
             CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
         )
+        if not isinstance(current_booking_lists, bool):
+            current_booking_lists = DEFAULT_INCLUDE_BOOKING_LISTS
 
         return self.async_show_form(
             step_id="init",
