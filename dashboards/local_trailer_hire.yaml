@@ -1,0 +1,191 @@
+# Sample Home Assistant dashboard for the Local Trailer Hire integration.
+#
+# How to use:
+#   1. Settings → Dashboards → "Add Dashboard" → "New dashboard from scratch"
+#   2. Open the new dashboard, click the three-dots menu → "Edit dashboard"
+#   3. Three-dots menu again → "Raw configuration editor"
+#   4. Replace the contents with this file's contents and save.
+#
+# All entity IDs assume the default Home Assistant slug
+# (`local_trailer_hire_*`). Adjust if you renamed entities.
+
+title: Local Trailer Hire
+views:
+  - title: Overview
+    path: overview
+    icon: mdi:truck-trailer
+    cards:
+      # ──────────────────────────────────────────────────────────────────
+      # Pending action banner — only visible when a request needs handling
+      # ──────────────────────────────────────────────────────────────────
+      - type: conditional
+        conditions:
+          - entity: binary_sensor.local_trailer_hire_pending_action
+            state: "on"
+        card:
+          type: markdown
+          content: >
+            ## ⚠️ Action required
+
+            You have **{{
+            state_attr('binary_sensor.local_trailer_hire_pending_action',
+            'pending_count') }}** booking
+            request(s) waiting for accept or decline. Open the *Pending
+            Requests* card below.
+
+      # ──────────────────────────────────────────────────────────────────
+      # Top-line stats
+      # ──────────────────────────────────────────────────────────────────
+      - type: glance
+        title: Bookings
+        columns: 4
+        entities:
+          - entity: sensor.local_trailer_hire_upcoming_bookings
+            name: Upcoming
+          - entity: sensor.local_trailer_hire_in_progress_bookings
+            name: In progress
+          - entity: sensor.local_trailer_hire_pending_requests
+            name: Pending
+          - entity: sensor.local_trailer_hire_total_bookings
+            name: Total
+
+      - type: glance
+        title: Earnings (AUD)
+        columns: 4
+        entities:
+          - entity: sensor.local_trailer_hire_earnings_month_to_date
+            name: MTD
+          - entity: sensor.local_trailer_hire_earnings_year_to_date
+            name: YTD
+          - entity: sensor.local_trailer_hire_earnings_last_30_days
+            name: Last 30d
+          - entity: sensor.local_trailer_hire_earnings_total
+            name: All time
+
+      # ──────────────────────────────────────────────────────────────────
+      # Calendar — every booking as an event
+      # ──────────────────────────────────────────────────────────────────
+      - type: calendar
+        title: Booking calendar
+        entities:
+          - calendar.local_trailer_hire_bookings
+        initial_view: dayGridMonth
+
+      # ──────────────────────────────────────────────────────────────────
+      # Next booking summary
+      # ──────────────────────────────────────────────────────────────────
+      - type: entities
+        title: Next booking
+        show_header_toggle: false
+        entities:
+          - entity: sensor.local_trailer_hire_next_booking_start
+            name: Pickup
+          - entity: sensor.local_trailer_hire_next_booking_end
+            name: Return
+          - entity: sensor.local_trailer_hire_next_booking_customer
+            name: Customer
+          - entity: sensor.local_trailer_hire_next_booking_payout
+            name: Payout
+
+      # ──────────────────────────────────────────────────────────────────
+      # Pending requests — markdown table + action buttons.
+      # The button targets are filled in by an automation or scripts; the
+      # examples below assume you've created an input_text helper called
+      # `input_text.lth_pending_transaction` and copy the transaction id
+      # from the binary sensor attributes.
+      # ──────────────────────────────────────────────────────────────────
+      - type: markdown
+        title: Pending requests
+        content: |
+          {% set pending = state_attr('binary_sensor.local_trailer_hire_pending_action', 'transactions') or [] %}
+          {% if pending %}
+          | Listing | Customer | Pickup | Payout | Transaction |
+          | --- | --- | --- | --- | --- |
+          {% for p in pending -%}
+          | {{ p.listing_title }} | {{ p.customer }} | {{ p.booking_start }} | ${{ '%.2f'|format(p.payout_total_aud or 0) }} | `{{ p.transaction_id }}` |
+          {% endfor %}
+          {% else %}
+          *No pending requests right now.*
+          {% endif %}
+
+      - type: horizontal-stack
+        cards:
+          - type: button
+            name: Accept (paste txn id)
+            icon: mdi:check
+            tap_action:
+              action: call-service
+              service: localtrailerhire.accept_booking
+              data:
+                transaction_id: "{{ states('input_text.lth_pending_transaction') }}"
+          - type: button
+            name: Decline (paste txn id)
+            icon: mdi:close
+            tap_action:
+              action: call-service
+              service: localtrailerhire.decline_booking
+              data:
+                transaction_id: "{{ states('input_text.lth_pending_transaction') }}"
+          - type: button
+            name: Refresh
+            icon: mdi:refresh
+            tap_action:
+              action: call-service
+              service: localtrailerhire.refresh_now
+
+  # ────────────────────────────────────────────────────────────────────
+  # Per-listing view: one device per trailer with state, price, bookings.
+  # Home Assistant auto-discovers all `_listing_*` entities under their
+  # listing-specific device, so the simplest way to render this view is
+  # an "auto-entities" card (HACS) or per-listing entity cards. The
+  # snippet below uses an `entities` card filtered by entity prefix
+  # which works without any extra HACS dependencies — replace the IDs
+  # with your actual listing entity IDs.
+  # ────────────────────────────────────────────────────────────────────
+  - title: Listings
+    path: listings
+    icon: mdi:format-list-bulleted
+    cards:
+      - type: markdown
+        content: >
+          ## Per-listing detail
+
+          Each trailer listing appears as its own device under
+          *Settings → Devices & services → Local Trailer Hire*. The
+          entities below are sample IDs — replace with your real ones,
+          or just open the device pages directly from the integration.
+
+      - type: entities
+        title: Listings — state and price
+        entities:
+          # Replace `<trailer_slug>` with the entity-id slug for each listing,
+          # which is derived from your listing title.
+          # - entity: sensor.<trailer_slug>_state
+          #   name: State
+          # - entity: sensor.<trailer_slug>_price
+          #   name: Daily price
+          # - entity: sensor.<trailer_slug>_active_bookings
+          #   name: Active bookings
+          - type: section
+            label: Add per-listing sensors here once you've named them
+
+  # ────────────────────────────────────────────────────────────────────
+  # Diagnostics
+  # ────────────────────────────────────────────────────────────────────
+  - title: Diagnostics
+    path: diagnostics
+    icon: mdi:stethoscope
+    cards:
+      - type: entities
+        title: Coordinator state
+        entities:
+          - entity: sensor.local_trailer_hire_total_bookings
+            name: Total fetched
+          - entity: sensor.local_trailer_hire_unknown_dates_bookings
+            name: Unknown date bookings
+      - type: button
+        name: Force refresh
+        icon: mdi:refresh
+        tap_action:
+          action: call-service
+          service: localtrailerhire.refresh_now

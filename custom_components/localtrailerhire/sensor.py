@@ -18,6 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import LocalTrailerHireCoordinator
+from .util import parse_iso_datetime
 from .const import (
     ATTR_BOOKING_COUNT,
     ATTR_BOOKINGS,
@@ -31,6 +32,7 @@ from .const import (
     DEFAULT_INCLUDE_BOOKING_LISTS,
     DOMAIN,
     PAYOUT_TRANSITIONS,
+    REQUEST_TRANSITIONS,
     SENSOR_BOOKINGS_TOTAL_PAYIN,
     SENSOR_EARNINGS_EARNED,
     SENSOR_EARNINGS_SCHEDULED,
@@ -62,6 +64,7 @@ async def async_setup_entry(
         InProgressBookingsCountSensor(coordinator, entry),
         UnknownDatesCountSensor(coordinator, entry),
         TotalBookingsCountSensor(coordinator, entry),
+        PendingRequestCountSensor(coordinator, entry),
         # Next booking sensors
         NextBookingStartSensor(coordinator, entry),
         NextBookingEndSensor(coordinator, entry),
@@ -72,7 +75,19 @@ async def async_setup_entry(
         EarningsEarnedSensor(coordinator, entry),
         EarningsScheduledSensor(coordinator, entry),
         BookingsTotalPayinSensor(coordinator, entry),
+        EarningsLast30DaysSensor(coordinator, entry),
+        EarningsMonthToDateSensor(coordinator, entry),
+        EarningsYearToDateSensor(coordinator, entry),
     ]
+
+    # Per-listing entities (created from the initial listings snapshot)
+    for listing in coordinator.listings:
+        listing_id = listing.get("id")
+        if not listing_id:
+            continue
+        entities.append(ListingStateSensor(coordinator, entry, listing_id))
+        entities.append(ListingPriceSensor(coordinator, entry, listing_id))
+        entities.append(ListingBookingsCountSensor(coordinator, entry, listing_id))
 
     async_add_entities(entities)
 
@@ -350,23 +365,7 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
         booking = self._next_upcoming_booking
         if not booking:
             return None
-
-        start_str = booking.get("booking_start")
-        if not start_str:
-            return None
-
-        try:
-            if isinstance(start_str, str):
-                if start_str.endswith("Z"):
-                    start_str = start_str[:-1] + "+00:00"
-                dt = datetime.fromisoformat(start_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-        except (ValueError, TypeError):
-            return None
-
-        return None
+        return parse_iso_datetime(booking.get("booking_start"))
 
     @property
     def available(self) -> bool:
@@ -420,23 +419,7 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
         booking = self._next_upcoming_booking
         if not booking:
             return None
-
-        end_str = booking.get("booking_end")
-        if not end_str:
-            return None
-
-        try:
-            if isinstance(end_str, str):
-                if end_str.endswith("Z"):
-                    end_str = end_str[:-1] + "+00:00"
-                dt = datetime.fromisoformat(end_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-        except (ValueError, TypeError):
-            return None
-
-        return None
+        return parse_iso_datetime(booking.get("booking_end"))
 
     @property
     def available(self) -> bool:
@@ -781,3 +764,267 @@ class BookingsTotalPayinSensor(LocalTrailerHireBaseSensor):
                 1 for b in self._all_bookings if b.get("payin_total_aud") is not None
             ),
         }
+
+
+# =============================================================================
+# PENDING REQUESTS
+# =============================================================================
+
+
+class PendingRequestCountSensor(LocalTrailerHireBaseSensor):
+    """Count of bookings whose last_transition is a pending request."""
+
+    _attr_icon = "mdi:bell-alert-outline"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, "pending_requests_count", "Pending Requests")
+
+    @property
+    def _pending(self) -> list[dict[str, Any]]:
+        return [
+            b for b in self._all_bookings
+            if b.get("last_transition") in REQUEST_TRANSITIONS
+        ]
+
+    @property
+    def native_value(self) -> int:
+        return len(self._pending)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {
+            ATTR_BOOKING_COUNT: len(self._pending),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+        }
+        if self._include_booking_lists:
+            attrs[ATTR_BOOKINGS] = self._pending
+        return attrs
+
+
+# =============================================================================
+# EARNINGS BY PERIOD
+# =============================================================================
+
+
+def _payout_in_window(
+    bookings: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> float:
+    """Sum payout for bookings whose start falls within [window_start, window_end)."""
+    total = 0.0
+    for booking in bookings:
+        payout = booking.get("payout_total_aud")
+        if payout is None:
+            continue
+        start_dt = parse_iso_datetime(booking.get("booking_start"))
+        if start_dt is None:
+            continue
+        if window_start <= start_dt < window_end:
+            total += payout
+    return round(total, 2)
+
+
+class _EarningsWindowSensor(LocalTrailerHireBaseSensor):
+    """Base for earnings-over-a-rolling-window sensors."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def _window(self) -> tuple[datetime, datetime]:
+        raise NotImplementedError
+
+    @property
+    def native_value(self) -> float:
+        start, end = self._window()
+        return _payout_in_window(self._all_bookings, start, end)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+
+class EarningsLast30DaysSensor(_EarningsWindowSensor):
+    """Earnings for bookings starting in the last 30 days."""
+
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, "earnings_last_30_days_aud", "Earnings Last 30 Days")
+
+    def _window(self) -> tuple[datetime, datetime]:
+        from datetime import timedelta as _td  # local import to avoid module-level shuffle
+        now = datetime.now(timezone.utc)
+        return now - _td(days=30), now + _td(days=1)
+
+
+class EarningsMonthToDateSensor(_EarningsWindowSensor):
+    """Earnings for bookings starting since the 1st of this month."""
+
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, "earnings_month_to_date_aud", "Earnings Month To Date")
+
+    def _window(self) -> tuple[datetime, datetime]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        from datetime import timedelta as _td
+        return start, now + _td(days=1)
+
+
+class EarningsYearToDateSensor(_EarningsWindowSensor):
+    """Earnings for bookings starting since 1 January of this year."""
+
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, "earnings_year_to_date_aud", "Earnings Year To Date")
+
+    def _window(self) -> tuple[datetime, datetime]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(
+            month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        from datetime import timedelta as _td
+        return start, now + _td(days=1)
+
+
+# =============================================================================
+# PER-LISTING SENSORS
+# =============================================================================
+
+
+class _BaseListingSensor(
+    CoordinatorEntity[LocalTrailerHireCoordinator], SensorEntity
+):
+    """Common base for per-listing sensors."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: LocalTrailerHireCoordinator,
+        entry: ConfigEntry,
+        listing_id: str,
+        suffix: str,
+        name: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._listing_id = listing_id
+        self._attr_name = name
+        self._attr_unique_id = f"{entry.entry_id}_listing_{listing_id}_{suffix}"
+
+    @property
+    def _listing(self) -> dict[str, Any] | None:
+        for listing in self.coordinator.listings:
+            if listing.get("id") == self._listing_id:
+                return listing
+        return None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        listing = self._listing or {}
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"listing_{self._listing_id}")},
+            name=listing.get("title") or "Trailer listing",
+            manufacturer="Sharetribe",
+            model="Listing",
+            via_device=(DOMAIN, self._entry.entry_id),
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self._listing is not None
+
+
+class ListingStateSensor(_BaseListingSensor):
+    """Listing state (published / closed / draft / pendingApproval)."""
+
+    _attr_icon = "mdi:flag-variant"
+
+    def __init__(
+        self,
+        coordinator: LocalTrailerHireCoordinator,
+        entry: ConfigEntry,
+        listing_id: str,
+    ) -> None:
+        super().__init__(coordinator, entry, listing_id, "state", "State")
+
+    @property
+    def native_value(self) -> str | None:
+        listing = self._listing
+        return listing.get("state") if listing else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        listing = self._listing or {}
+        return {
+            "title": listing.get("title"),
+            "deleted": listing.get("deleted"),
+            "image_url": listing.get("image_url"),
+            "listing_id": self._listing_id,
+        }
+
+
+class ListingPriceSensor(_BaseListingSensor):
+    """Listing daily price in AUD."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:cash"
+
+    def __init__(
+        self,
+        coordinator: LocalTrailerHireCoordinator,
+        entry: ConfigEntry,
+        listing_id: str,
+    ) -> None:
+        super().__init__(coordinator, entry, listing_id, "price", "Price")
+
+    @property
+    def native_value(self) -> float | None:
+        listing = self._listing
+        return listing.get("price_aud") if listing else None
+
+
+class ListingBookingsCountSensor(_BaseListingSensor):
+    """Count of upcoming + in-progress bookings on a single listing."""
+
+    _attr_icon = "mdi:calendar-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: LocalTrailerHireCoordinator,
+        entry: ConfigEntry,
+        listing_id: str,
+    ) -> None:
+        super().__init__(coordinator, entry, listing_id, "bookings_count", "Active Bookings")
+
+    @property
+    def native_value(self) -> int:
+        bookings = self.coordinator.data or []
+        return sum(
+            1
+            for b in bookings
+            if b.get("listing_id") == self._listing_id
+            and b.get("category") in (CATEGORY_UPCOMING, CATEGORY_IN_PROGRESS)
+        )

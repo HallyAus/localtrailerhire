@@ -16,9 +16,12 @@ from .const import (
     DEFAULT_PER_PAGE,
     MAX_PAGES,
     MESSAGE_SEND_URL,
+    OWN_LISTINGS_URL,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
+    TRANSITION_URL,
 )
+from .util import parse_iso_datetime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +61,16 @@ class SharetribeFlexAPI:
     def refresh_token(self) -> str | None:
         """Return the current refresh token."""
         return self._refresh_token
+
+    @property
+    def has_access_token(self) -> bool:
+        """Return whether an access token is currently held."""
+        return self._access_token is not None
+
+    @property
+    def token_expiry(self) -> datetime | None:
+        """Return the access token expiry timestamp, if known."""
+        return self._token_expiry
 
     @property
     def diagnostics(self) -> dict[str, Any]:
@@ -311,7 +324,7 @@ class SharetribeFlexAPI:
                 "Using transition filter: %s", last_transitions
             )
         else:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "No transition filter - fetching ALL transactions, "
                 "will determine upcoming by booking dates only"
             )
@@ -350,7 +363,7 @@ class SharetribeFlexAPI:
 
             # Log the request URL (sanitized - no token in URL)
             query_string = urlencode(params)
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Fetching transactions: url=%s?%s",
                 TRANSACTIONS_URL,
                 query_string,
@@ -370,7 +383,7 @@ class SharetribeFlexAPI:
             current_page = meta.get("page", page)
 
             # Log detailed pagination info
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Transactions response: page=%d/%d, per_page=%d, "
                 "transactions_this_page=%d, total_items=%d, content_type=%s",
                 current_page,
@@ -426,7 +439,7 @@ class SharetribeFlexAPI:
         # Store diagnostics for later retrieval
         self._last_diagnostics = diagnostics
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Transaction processing complete: total_fetched=%d, upcoming=%d, "
             "past=%d, unknown_dates=%d",
             diagnostics["total_transactions_fetched"],
@@ -464,7 +477,7 @@ class SharetribeFlexAPI:
         if not message:
             raise APIError("message is required")
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "SEND_MESSAGE: Starting - transaction_id=%s, message_length=%d chars",
             transaction_id,
             len(message),
@@ -592,7 +605,7 @@ class SharetribeFlexAPI:
                     )
 
                 # Success!
-                _LOGGER.info(
+                _LOGGER.debug(
                     "SEND_MESSAGE: SUCCESS - status=%d, transaction_id from payload=%s",
                     status_code,
                     payload[2] if len(payload) > 2 else "unknown",  # ~u<uuid>
@@ -609,6 +622,202 @@ class SharetribeFlexAPI:
                 type(err).__name__,
             )
             raise APIError(f"Network error: {type(err).__name__}") from err
+
+    async def transition_transaction(
+        self,
+        transaction_id: str,
+        transition: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Transition a transaction to a new state (accept, decline, cancel, ...).
+
+        Sharetribe accepts both JSON and Transit payloads on this endpoint;
+        we use JSON because the body is plain string fields plus an optional
+        params object. Returns ``{"success": True, "status_code": ...}``.
+        """
+        if not transaction_id:
+            raise APIError("transaction_id is required")
+        if not transition:
+            raise APIError("transition is required")
+
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "id": transaction_id,
+            "transition": transition,
+            "params": params or {},
+        }
+
+        return await self._post_transition_with_retry(
+            body=body, headers=headers, retry_auth=True
+        )
+
+    async def _post_transition_with_retry(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+        retry_auth: bool,
+    ) -> dict[str, Any]:
+        """POST to /transactions/transition with one 401 retry."""
+        try:
+            async with self._session.post(
+                TRANSITION_URL, json=body, headers=headers
+            ) as response:
+                status_code = response.status
+
+                if status_code == 401 and retry_auth:
+                    _LOGGER.debug("Got 401 on transition, refreshing token")
+                    await self._refresh_access_token(force=True)
+                    headers["Authorization"] = f"Bearer {self._access_token}"
+                    return await self._post_transition_with_retry(
+                        body=body, headers=headers, retry_auth=False
+                    )
+
+                if status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    _LOGGER.warning(
+                        "Rate limited on transition, waiting %ds", retry_after
+                    )
+                    await asyncio.sleep(retry_after)
+                    return await self._post_transition_with_retry(
+                        body=body, headers=headers, retry_auth=retry_auth
+                    )
+
+                if status_code >= 400:
+                    text = await response.text()
+                    _LOGGER.error(
+                        "Transition failed: status=%d, transition=%s, response=%s",
+                        status_code,
+                        body.get("transition"),
+                        text[:500] if text else "(empty)",
+                    )
+                    raise APIError(
+                        f"Transition {body.get('transition')} failed "
+                        f"(status {status_code})"
+                    )
+
+                _LOGGER.info(
+                    "Transition succeeded: %s on %s",
+                    body.get("transition"),
+                    body.get("id"),
+                )
+                return {"success": True, "status_code": status_code}
+
+        except aiohttp.ClientError as err:
+            _LOGGER.error("Network error during transition: %s", type(err).__name__)
+            raise APIError(f"Network error: {type(err).__name__}") from err
+
+    async def get_own_listings(self) -> list[dict[str, Any]]:
+        """Fetch all of the authenticated provider's own listings.
+
+        Returns a list of simplified dicts:
+        ``{id, title, state, price_aud, deleted, image_url}``.
+        """
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        params = {
+            "per_page": "100",
+            "include": "images",
+        }
+
+        listings: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params["page"] = str(page)
+            result, _meta = await self._request_with_retry(
+                "GET", OWN_LISTINGS_URL, headers=headers, params=params
+            )
+
+            data = result.get("data", [])
+            included = result.get("included", [])
+            images_map = self._build_images_map(included)
+
+            for item in data:
+                listing = self._extract_listing(item, images_map)
+                if listing is not None:
+                    listings.append(listing)
+
+            if len(data) < int(params["per_page"]):
+                break
+            if page >= MAX_PAGES:
+                _LOGGER.warning("Hit MAX_PAGES while fetching own_listings")
+                break
+            page += 1
+
+        _LOGGER.debug("Fetched %d own listings", len(listings))
+        return listings
+
+    @classmethod
+    def _build_images_map(
+        cls, included: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """Build ``{image_id: best_url}`` from the JSON-API included array."""
+        images: dict[str, str] = {}
+        for item in included:
+            if item.get("type") != "image":
+                continue
+            image_id = cls._extract_uuid(item.get("id"))
+            if not image_id:
+                continue
+            variants = (
+                item.get("attributes", {}).get("variants", {}) or {}
+            )
+            # Prefer a reasonably sized variant; fall back to anything.
+            for preferred in ("landscape-crop2x", "landscape-crop", "default"):
+                variant = variants.get(preferred)
+                if variant and variant.get("url"):
+                    images[image_id] = variant["url"]
+                    break
+            else:
+                for variant in variants.values():
+                    if isinstance(variant, dict) and variant.get("url"):
+                        images[image_id] = variant["url"]
+                        break
+        return images
+
+    @classmethod
+    def _extract_listing(
+        cls,
+        item: dict[str, Any],
+        images_map: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Extract a simplified listing dict from one own_listings entry."""
+        listing_id = cls._extract_uuid(item.get("id"))
+        if not listing_id:
+            return None
+
+        attrs = item.get("attributes", {}) or {}
+        relationships = item.get("relationships", {}) or {}
+
+        # First image, if any
+        image_url: str | None = None
+        images_rel = relationships.get("images", {}).get("data") or []
+        if isinstance(images_rel, list) and images_rel:
+            first_image_id = cls._extract_uuid(images_rel[0].get("id"))
+            if first_image_id:
+                image_url = images_map.get(first_image_id)
+
+        return {
+            "id": listing_id,
+            "title": attrs.get("title"),
+            "state": attrs.get("state"),
+            "deleted": attrs.get("deleted", False),
+            "price_aud": cls._format_money(attrs.get("price")),
+            "image_url": image_url,
+        }
 
     def _process_transactions(
         self,
@@ -690,7 +899,7 @@ class SharetribeFlexAPI:
                 # Log first 3 transactions for debugging
                 if sample_count < 3:
                     diagnostics["sample_transactions"].append(debug_info)
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "Sample transaction [%d]: id=%s, last_transition=%s, "
                         "booking_start=%s, booking_end=%s, category=%s, reason=%s",
                         sample_count,
@@ -738,6 +947,56 @@ class SharetribeFlexAPI:
 
         return all_bookings
 
+    @staticmethod
+    def _extract_uuid(node: Any) -> str | None:
+        """Extract a UUID string from a Sharetribe id object.
+
+        Handles both ``{"uuid": "..."}`` and bare-string id formats.
+        """
+        if isinstance(node, dict):
+            return node.get("uuid")
+        if isinstance(node, str) and node:
+            return node
+        return None
+
+    @classmethod
+    def _related_id(cls, relationships: dict[str, Any], key: str) -> str | None:
+        """Pull a related entity id from a relationships dict."""
+        ref = relationships.get(key, {}).get("data")
+        if not isinstance(ref, dict):
+            return None
+        return cls._extract_uuid(ref.get("id"))
+
+    @staticmethod
+    def _categorize(
+        start_dt: datetime | None, end_dt: datetime | None, now: datetime
+    ) -> tuple[str, str]:
+        """Categorize a booking by its start/end times relative to now.
+
+        Returns ``(category, reason)`` where category is one of
+        ``upcoming``, ``in_progress``, ``past``, or ``unknown``.
+        """
+        if start_dt is None or end_dt is None:
+            missing = []
+            if start_dt is None:
+                missing.append("booking_start")
+            if end_dt is None:
+                missing.append("booking_end")
+            return "unknown", f"missing dates: {', '.join(missing)}"
+
+        if start_dt >= now:
+            return "upcoming", (
+                f"booking_start ({start_dt.isoformat()}) >= now ({now.isoformat()})"
+            )
+        if end_dt < now:
+            return "past", (
+                f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})"
+            )
+        return "in_progress", (
+            f"booking_start ({start_dt.isoformat()}) <= now ({now.isoformat()}) "
+            f"< booking_end ({end_dt.isoformat()})"
+        )
+
     def _extract_booking_data(
         self,
         txn: dict[str, Any],
@@ -749,20 +1008,10 @@ class SharetribeFlexAPI:
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """Extract structured booking data from a transaction.
 
-        Returns: (booking_data, debug_info)
-        debug_info contains diagnostic information for logging.
-
-        Args:
-            include_sensitive: If True, include full licence and unmasked phone.
-                              If False, omit licence and mask phone numbers.
+        Returns ``(booking_data, debug_info)``; ``booking_data`` is None when
+        the transaction has no usable id.
         """
-        # Extract transaction ID (handle both formats)
-        txn_id_obj = txn.get("id", {})
-        if isinstance(txn_id_obj, dict):
-            txn_id = txn_id_obj.get("uuid")
-        else:
-            txn_id = txn_id_obj
-
+        txn_id = self._extract_uuid(txn.get("id"))
         debug_info: dict[str, Any] = {
             "transaction_id": txn_id,
             "is_upcoming": None,
@@ -779,142 +1028,53 @@ class SharetribeFlexAPI:
         debug_info["last_transition"] = attrs.get("lastTransition")
         debug_info["state"] = attrs.get("state")
 
-        # Get booking details from relationships
-        booking_ref = relationships.get("booking", {}).get("data", {})
-        if isinstance(booking_ref, dict):
-            booking_id_obj = booking_ref.get("id", {})
-            if isinstance(booking_id_obj, dict):
-                booking_id = booking_id_obj.get("uuid")
-            else:
-                booking_id = booking_id_obj
-        else:
-            booking_id = None
+        # Resolve related entities
+        booking_id = self._related_id(relationships, "booking")
+        customer_id = self._related_id(relationships, "customer")
+        listing_id = self._related_id(relationships, "listing")
 
         booking = bookings_map.get(booking_id, {}) if booking_id else {}
         booking_attrs = booking.get("attributes", {})
-
-        # Extract booking start/end
-        booking_start = booking_attrs.get("start")
-        booking_end = booking_attrs.get("end")
-
-        debug_info["booking_id"] = booking_id
-        debug_info["booking_start"] = booking_start
-        debug_info["booking_end"] = booking_end
-        debug_info["booking_found_in_included"] = bool(booking)
-
-        # Categorize booking based on dates
-        # Categories: upcoming, in_progress, past, unknown
-        category = "unknown"
-        start_dt: datetime | None = None
-        end_dt: datetime | None = None
-
-        # Parse booking_start
-        if booking_start and isinstance(booking_start, str):
-            try:
-                start_str = booking_start
-                if start_str.endswith("Z"):
-                    start_str = start_str[:-1] + "+00:00"
-                start_dt = datetime.fromisoformat(start_str)
-                if start_dt.tzinfo is None:
-                    start_dt = start_dt.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError) as err:
-                _LOGGER.warning(
-                    "Failed to parse booking_start for transaction %s: %s",
-                    txn_id, err
-                )
-
-        # Parse booking_end
-        if booking_end and isinstance(booking_end, str):
-            try:
-                end_str = booking_end
-                if end_str.endswith("Z"):
-                    end_str = end_str[:-1] + "+00:00"
-                end_dt = datetime.fromisoformat(end_str)
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError) as err:
-                _LOGGER.warning(
-                    "Failed to parse booking_end for transaction %s: %s",
-                    txn_id, err
-                )
-
-        # Determine category
-        if start_dt is not None and end_dt is not None:
-            # Both dates known
-            if start_dt >= now:
-                category = "upcoming"
-                debug_info["category_reason"] = (
-                    f"booking_start ({start_dt.isoformat()}) >= now ({now.isoformat()})"
-                )
-            elif end_dt < now:
-                category = "past"
-                debug_info["category_reason"] = (
-                    f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})"
-                )
-            else:
-                # start_dt < now <= end_dt
-                category = "in_progress"
-                debug_info["category_reason"] = (
-                    f"booking_start ({start_dt.isoformat()}) <= now ({now.isoformat()}) "
-                    f"< booking_end ({end_dt.isoformat()})"
-                )
-        else:
-            # Missing dates
-            category = "unknown"
-            missing = []
-            if start_dt is None:
-                missing.append("booking_start")
-            if end_dt is None:
-                missing.append("booking_end")
-            debug_info["category_reason"] = f"missing dates: {', '.join(missing)}"
-
-        debug_info["category"] = category
-        # Legacy fields for backwards compatibility
-        debug_info["is_upcoming"] = category == "upcoming"
-        debug_info["upcoming_reason"] = debug_info.get("category_reason")
-
-        # Get customer details from relationships
-        customer_ref = relationships.get("customer", {}).get("data", {})
-        if isinstance(customer_ref, dict):
-            customer_id_obj = customer_ref.get("id", {})
-            if isinstance(customer_id_obj, dict):
-                customer_id = customer_id_obj.get("uuid")
-            else:
-                customer_id = customer_id_obj
-        else:
-            customer_id = None
-
         customer = customers_map.get(customer_id, {}) if customer_id else {}
-        customer_attrs = customer.get("attributes", {})
-        customer_profile = customer_attrs.get("profile", {})
-
-        # Get listing details
-        listing_ref = relationships.get("listing", {}).get("data", {})
-        if isinstance(listing_ref, dict):
-            listing_id_obj = listing_ref.get("id", {})
-            if isinstance(listing_id_obj, dict):
-                listing_id = listing_id_obj.get("uuid")
-            else:
-                listing_id = listing_id_obj
-        else:
-            listing_id = None
-
+        customer_profile = customer.get("attributes", {}).get("profile", {})
         listing = listings_map.get(listing_id, {}) if listing_id else {}
         listing_attrs = listing.get("attributes", {})
 
-        # Extract protected data for customer details
+        # Booking dates and category
+        booking_start = booking_attrs.get("start")
+        booking_end = booking_attrs.get("end")
+        start_dt = parse_iso_datetime(booking_start)
+        end_dt = parse_iso_datetime(booking_end)
+
+        if booking_start and start_dt is None:
+            _LOGGER.warning(
+                "Failed to parse booking_start for transaction %s", txn_id
+            )
+        if booking_end and end_dt is None:
+            _LOGGER.warning(
+                "Failed to parse booking_end for transaction %s", txn_id
+            )
+
+        category, reason = self._categorize(start_dt, end_dt, now)
+
+        debug_info.update(
+            {
+                "booking_id": booking_id,
+                "booking_start": booking_start,
+                "booking_end": booking_end,
+                "booking_found_in_included": bool(booking),
+                "category": category,
+                "category_reason": reason,
+                "is_upcoming": category == "upcoming",
+                "upcoming_reason": reason,
+            }
+        )
+
+        # Customer/financial extraction
         protected_data = attrs.get("protectedData", {}) or {}
-
-        # Extract payout and payin totals
-        payout_total = attrs.get("payoutTotal", {})
-        payin_total = attrs.get("payinTotal", {})
-
-        # Build structured customer object
         customer_obj = self._build_customer_object(
             customer_profile, protected_data, include_sensitive
         )
-
-        # Legacy fields (kept for backwards compatibility)
         raw_phone = (
             protected_data.get("customerPhoneNumber")
             or protected_data.get("phoneNumber")
@@ -928,20 +1088,16 @@ class SharetribeFlexAPI:
             "customer_first_name": customer_profile.get("firstName"),
             "customer_last_name": customer_profile.get("lastName"),
             "customer_display_name": customer_profile.get("displayName"),
-            "customer_phone": self._mask_phone(raw_phone) if not include_sensitive else raw_phone,
+            "customer_phone": raw_phone if include_sensitive else self._mask_phone(raw_phone),
             "pickup_address": protected_data.get("pickupAddress")
             or protected_data.get("address"),
             "pickup_suburb": protected_data.get("suburb"),
-            # Structured customer object
             "customer": customer_obj,
-            # Financial
-            "payout_total_aud": self._format_money(payout_total),
-            "payin_total_aud": self._format_money(payin_total),
-            # Transaction state
+            "payout_total_aud": self._format_money(attrs.get("payoutTotal")),
+            "payin_total_aud": self._format_money(attrs.get("payinTotal")),
             "last_transition": attrs.get("lastTransition"),
             "state": booking_attrs.get("state"),
             "last_transitioned_at": attrs.get("lastTransitionedAt"),
-            # Listing
             "listing_title": listing_attrs.get("title"),
             "listing_id": listing_id,
         }

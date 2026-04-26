@@ -9,14 +9,19 @@ A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerh
 
 ## Features
 
-- **Booking Count Sensors**: Separate sensors for upcoming, in-progress, unknown dates, and total bookings
+- **Booking Count Sensors**: Separate sensors for upcoming, in-progress, pending requests, unknown dates, and total bookings
 - **Next Booking Sensors**: Start time, end time, customer name, and payout for the next upcoming booking
-- **Earnings Sensors**: Track total earnings, earned (completed) and scheduled (future) payouts
+- **Earnings Sensors**: Total, earned, scheduled, MTD, YTD, and last-30-day payouts
+- **Calendar Entity**: Native Home Assistant calendar exposing every booking as an event
+- **Per-Listing Devices**: Each of your trailer listings becomes its own HA device with state, daily price, and active-booking count
+- **Pending Action Binary Sensor**: Lights up when one or more booking requests need accept/decline
+- **Accept / Decline Services**: Approve or reject booking requests directly from automations
+- **Send Message Service**: Send messages to customers through the marketplace
+- **Booking Lifecycle Events**: Fires `booking_request_received` and `booking_confirmed` events
 - **Automatic Token Refresh**: Handles OAuth2 token refresh automatically
 - **Configurable Update Interval**: Set how often to fetch new data (default: 10 minutes)
-- **Send Message Service**: Send messages to customers through the marketplace
-- **Booking Confirmed Events**: Fire Home Assistant events when bookings are confirmed
 - **Privacy Controls**: Option to mask sensitive customer data
+- **Sample Dashboard**: A ready-to-paste Lovelace dashboard in `dashboards/local_trailer_hire.yaml`
 
 ## Booking Categories
 
@@ -204,6 +209,23 @@ Payout from upcoming and in-progress bookings (in AUD).
 
 Total customer payments (payin) across all transactions (in AUD).
 
+## Calendar
+
+### `calendar.local_trailer_hire_bookings`
+
+A native calendar entity that surfaces every fetched booking as a calendar
+event, with the listing name and customer in the summary. Use the
+**Calendar** card on a dashboard to see the booking schedule at a glance,
+or trigger automations on `calendar` start/end events.
+
+Each event includes:
+- `summary`: `<listing> — <customer>` (e.g. "6x4 Cage Trailer — Jane S")
+- `start` / `end`: booking start and end times
+- `description`: transaction ID, last transition, payout, pickup suburb
+- `uid`: the transaction ID (so events deduplicate across refreshes)
+
+Bookings with missing dates are omitted.
+
 ## Example Booking Data Structure
 
 Each booking in the `bookings` attribute list contains:
@@ -324,6 +346,10 @@ automation:
 
 ## Services
 
+All services accept an optional `config_entry_id` to target a specific
+configured entry. It is required only if you have multiple Local Trailer Hire
+integrations configured.
+
 ### `localtrailerhire.send_message`
 
 Send a message to a customer for a specific booking transaction.
@@ -331,6 +357,7 @@ Send a message to a customer for a specific booking transaction.
 **Parameters:**
 - `transaction_id` (required): The UUID of the transaction
 - `message` (required): The message content to send
+- `config_entry_id` (optional): Target a specific config entry
 
 **Example:**
 ```yaml
@@ -340,7 +367,85 @@ data:
   message: "Thank you for your booking! Your trailer is ready for pickup."
 ```
 
+### `localtrailerhire.refresh_now`
+
+Force an immediate refresh of booking data from the API. With no parameters,
+refreshes every configured entry.
+
+**Parameters:**
+- `config_entry_id` (optional): Target a specific config entry
+
+### `localtrailerhire.mark_message_sent`
+
+Manually mark a transaction as having had a confirmation message sent. Use this
+to prevent duplicate messages after manual intervention or a misfired
+automation.
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the transaction
+- `config_entry_id` (optional): Target a specific config entry
+
+### `localtrailerhire.fire_confirmed_events`
+
+Re-scan and fire `localtrailerhire_booking_confirmed` events for bookings
+transitioned in the last N hours. Useful when debugging automations without
+sending real customer messages.
+
+**Parameters:**
+- `hours_back` (optional, default `24`, max `168`): How far back to look
+- `config_entry_id` (optional): Target a specific config entry
+
+### `localtrailerhire.accept_booking`
+
+Accept a pending booking request. Calls `transition/accept` on the Sharetribe
+transaction; the booking moves to confirmed and the customer is charged.
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the booking transaction
+- `config_entry_id` (optional): Target a specific config entry
+
+**Example:**
+```yaml
+service: localtrailerhire.accept_booking
+data:
+  transaction_id: "{{ trigger.event.data.transaction_id }}"
+```
+
+### `localtrailerhire.decline_booking`
+
+Decline a pending booking request. Calls `transition/decline` on the
+Sharetribe transaction.
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the booking transaction
+- `config_entry_id` (optional): Target a specific config entry
+
 ## Events
+
+### `localtrailerhire_booking_request_received`
+
+Fired the first time a booking shows up with a `request-payment` transition
+(or `request-payment-after-enquiry`) — i.e. an incoming request that needs the
+host to accept or decline.
+
+**Event data:** same fields as `localtrailerhire_booking_confirmed` below.
+
+**Example:**
+```yaml
+automation:
+  - alias: "Notify on booking request"
+    trigger:
+      - platform: event
+        event_type: localtrailerhire_booking_request_received
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "New booking request"
+          message: >
+            {{ trigger.event.data.customer_first_name }} wants to book
+            {{ trigger.event.data.listing_title }} from
+            {{ trigger.event.data.booking_start }}.
+```
 
 ### `localtrailerhire_booking_confirmed`
 
@@ -366,6 +471,30 @@ Fired when a message is successfully sent via the `send_message` service.
 **Event Data:**
 - `transaction_id`: The transaction the message was sent to
 - `timestamp`: When the message was sent
+
+## Sample Dashboard
+
+A ready-to-use Lovelace dashboard is included at
+[`dashboards/local_trailer_hire.yaml`](dashboards/local_trailer_hire.yaml). It
+shows the calendar, top-line stats, earnings by period, a pending-action
+banner with quick accept/decline buttons, and a per-listing view.
+
+To use it:
+1. Settings → Dashboards → **Add Dashboard** → New dashboard from scratch
+2. Open the new dashboard, three-dots → **Edit dashboard**
+3. Three-dots → **Raw configuration editor**
+4. Paste the contents of the YAML file and save
+
+## Per-Listing Devices
+
+Each of your trailers (`own_listings`) becomes its own Home Assistant device,
+linked to the integration as a child device. Per-listing entities:
+
+- `sensor.<title>_state` — `published`, `closed`, `draft`, or `pendingApproval`
+- `sensor.<title>_price` — daily price in AUD
+- `sensor.<title>_active_bookings` — count of upcoming + in-progress bookings on that listing
+
+New listings are picked up on next integration reload.
 
 ## Troubleshooting
 
