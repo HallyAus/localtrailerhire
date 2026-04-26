@@ -1,8 +1,6 @@
 {
   "name": "Local Trailer Hire",
   "render_readme": true,
-  "domains": ["sensor", "calendar"],
   "country": ["AU"],
-  "homeassistant": "2024.4.0",
-  "iot_class": "cloud_polling"
+  "homeassistant": "2024.4.0"
 }
