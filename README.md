@@ -12,6 +12,7 @@ A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerh
 - **Booking Count Sensors**: Separate sensors for upcoming, in-progress, unknown dates, and total bookings
 - **Next Booking Sensors**: Start time, end time, customer name, and payout for the next upcoming booking
 - **Earnings Sensors**: Track total earnings, earned (completed) and scheduled (future) payouts
+- **Calendar Entity**: Native Home Assistant calendar exposing every booking as an event
 - **Automatic Token Refresh**: Handles OAuth2 token refresh automatically
 - **Configurable Update Interval**: Set how often to fetch new data (default: 10 minutes)
 - **Send Message Service**: Send messages to customers through the marketplace
@@ -203,6 +204,23 @@ Payout from upcoming and in-progress bookings (in AUD).
 #### `sensor.local_trailer_hire_bookings_total_payin`
 
 Total customer payments (payin) across all transactions (in AUD).
+
+## Calendar
+
+### `calendar.local_trailer_hire_bookings`
+
+A native calendar entity that surfaces every fetched booking as a calendar
+event, with the listing name and customer in the summary. Use the
+**Calendar** card on a dashboard to see the booking schedule at a glance,
+or trigger automations on `calendar` start/end events.
+
+Each event includes:
+- `summary`: `<listing> — <customer>` (e.g. "6x4 Cage Trailer — Jane S")
+- `start` / `end`: booking start and end times
+- `description`: transaction ID, last transition, payout, pickup suburb
+- `uid`: the transaction ID (so events deduplicate across refreshes)
+
+Bookings with missing dates are omitted.
 
 ## Example Booking Data Structure
 
