@@ -74,9 +74,6 @@ SENSOR_EARNINGS_EARNED: Final = "earnings_earned_aud"
 SENSOR_EARNINGS_SCHEDULED: Final = "earnings_scheduled_aud"
 SENSOR_BOOKINGS_TOTAL_PAYIN: Final = "bookings_total_payin_aud"
 
-# Legacy sensor name (deprecated, kept for migration)
-SENSOR_BOOKINGS: Final = "bookings"
-
 # Booking categories
 CATEGORY_UPCOMING: Final = "upcoming"
 CATEGORY_IN_PROGRESS: Final = "in_progress"
@@ -131,4 +128,4 @@ EVENT_MESSAGE_SENT: Final = "localtrailerhire_message_sent"
 
 # Storage keys
 STORAGE_KEY: Final = "localtrailerhire_data"
-STORAGE_VERSION: Final = 1
+STORAGE_VERSION: Final = 2

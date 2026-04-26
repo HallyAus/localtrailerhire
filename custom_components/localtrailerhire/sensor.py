@@ -18,6 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import LocalTrailerHireCoordinator
+from .util import parse_iso_datetime
 from .const import (
     ATTR_BOOKING_COUNT,
     ATTR_BOOKINGS,
@@ -350,23 +351,7 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
         booking = self._next_upcoming_booking
         if not booking:
             return None
-
-        start_str = booking.get("booking_start")
-        if not start_str:
-            return None
-
-        try:
-            if isinstance(start_str, str):
-                if start_str.endswith("Z"):
-                    start_str = start_str[:-1] + "+00:00"
-                dt = datetime.fromisoformat(start_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-        except (ValueError, TypeError):
-            return None
-
-        return None
+        return parse_iso_datetime(booking.get("booking_start"))
 
     @property
     def available(self) -> bool:
@@ -420,23 +405,7 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
         booking = self._next_upcoming_booking
         if not booking:
             return None
-
-        end_str = booking.get("booking_end")
-        if not end_str:
-            return None
-
-        try:
-            if isinstance(end_str, str):
-                if end_str.endswith("Z"):
-                    end_str = end_str[:-1] + "+00:00"
-                dt = datetime.fromisoformat(end_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-        except (ValueError, TypeError):
-            return None
-
-        return None
+        return parse_iso_datetime(booking.get("booking_end"))
 
     @property
     def available(self) -> bool:

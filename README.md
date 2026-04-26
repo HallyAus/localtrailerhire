@@ -324,6 +324,10 @@ automation:
 
 ## Services
 
+All services accept an optional `config_entry_id` to target a specific
+configured entry. It is required only if you have multiple Local Trailer Hire
+integrations configured.
+
 ### `localtrailerhire.send_message`
 
 Send a message to a customer for a specific booking transaction.
@@ -331,6 +335,7 @@ Send a message to a customer for a specific booking transaction.
 **Parameters:**
 - `transaction_id` (required): The UUID of the transaction
 - `message` (required): The message content to send
+- `config_entry_id` (optional): Target a specific config entry
 
 **Example:**
 ```yaml
@@ -339,6 +344,34 @@ data:
   transaction_id: "12345678-1234-1234-1234-123456789abc"
   message: "Thank you for your booking! Your trailer is ready for pickup."
 ```
+
+### `localtrailerhire.refresh_now`
+
+Force an immediate refresh of booking data from the API. With no parameters,
+refreshes every configured entry.
+
+**Parameters:**
+- `config_entry_id` (optional): Target a specific config entry
+
+### `localtrailerhire.mark_message_sent`
+
+Manually mark a transaction as having had a confirmation message sent. Use this
+to prevent duplicate messages after manual intervention or a misfired
+automation.
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the transaction
+- `config_entry_id` (optional): Target a specific config entry
+
+### `localtrailerhire.fire_confirmed_events`
+
+Re-scan and fire `localtrailerhire_booking_confirmed` events for bookings
+transitioned in the last N hours. Useful when debugging automations without
+sending real customer messages.
+
+**Parameters:**
+- `hours_back` (optional, default `24`, max `168`): How far back to look
+- `config_entry_id` (optional): Target a specific config entry
 
 ## Events
 

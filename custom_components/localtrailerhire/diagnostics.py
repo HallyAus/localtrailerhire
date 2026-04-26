@@ -62,9 +62,9 @@ async def async_get_config_entry_diagnostics(
         api_diag = api.diagnostics if hasattr(api, "diagnostics") else {}
         diagnostics["api"] = {
             "last_diagnostics": _redact_sample_transactions(api_diag),
-            "has_access_token": api._access_token is not None,
+            "has_access_token": api.has_access_token,
             "token_expiry": (
-                api._token_expiry.isoformat() if api._token_expiry else None
+                api.token_expiry.isoformat() if api.token_expiry else None
             ),
         }
 

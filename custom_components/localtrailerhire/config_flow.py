@@ -270,48 +270,11 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle options flow.
-
-        This method is wrapped in try/except to ensure we always return a form,
-        never crash the UI with a 500 error.
-        """
+        """Handle options flow."""
         _LOGGER.debug(
             "Options flow init for entry %s", self._config_entry.entry_id
         )
 
-        try:
-            return await self._async_step_init_internal(user_input)
-        except Exception as err:
-            _LOGGER.exception("Options flow error: %s", err)
-            # Return a minimal working form even on error
-            return self.async_show_form(
-                step_id="init",
-                data_schema=vol.Schema(
-                    {
-                        vol.Optional(
-                            CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                        ): vol.All(
-                            vol.Coerce(int),
-                            vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
-                        ),
-                        vol.Optional(
-                            CONF_LAST_TRANSITIONS, default=""
-                        ): str,
-                        vol.Optional(
-                            CONF_INCLUDE_SENSITIVE, default=DEFAULT_INCLUDE_SENSITIVE
-                        ): bool,
-                        vol.Optional(
-                            CONF_INCLUDE_BOOKING_LISTS, default=DEFAULT_INCLUDE_BOOKING_LISTS
-                        ): bool,
-                    }
-                ),
-                errors={"base": "unknown"},
-            )
-
-    async def _async_step_init_internal(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Internal options flow logic."""
         if user_input is not None:
             # Normalize transitions - strip whitespace safely
             data = dict(user_input)
