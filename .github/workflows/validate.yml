@@ -28,6 +28,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # ``brands`` requires an upstream PR to home-assistant/brands; skip
-          # until the integration's icon is registered there.
-          ignore: brands
+          # ``brands`` requires an upstream PR to home-assistant/brands.
+          # ``description`` and ``topics`` are repository-level settings on
+          # github.com (Settings → top of repo page) that the CI cannot fix
+          # itself. Remove these ignores once they're set.
+          ignore: brands,description,topics
