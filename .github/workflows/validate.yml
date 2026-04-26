@@ -28,3 +28,6 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # ``brands`` requires an upstream PR to home-assistant/brands; skip
+          # until the integration's icon is registered there.
+          ignore: brands
