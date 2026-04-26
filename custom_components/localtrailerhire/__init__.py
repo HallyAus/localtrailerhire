@@ -32,18 +32,28 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_BOOKING_CONFIRMED,
+    EVENT_BOOKING_REQUEST_RECEIVED,
     EVENT_MESSAGE_SENT,
+    REQUEST_TRANSITIONS,
+    SERVICE_ACCEPT_BOOKING,
+    SERVICE_DECLINE_BOOKING,
     SERVICE_FIRE_CONFIRMED_EVENTS,
     SERVICE_MARK_MESSAGE_SENT,
     SERVICE_REFRESH_NOW,
     SERVICE_SEND_MESSAGE,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TRANSITION_ACCEPT,
+    TRANSITION_DECLINE,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.CALENDAR]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.CALENDAR,
+]
 
 
 class LocalTrailerHireStore(Store):
@@ -105,6 +115,13 @@ SERVICE_FIRE_CONFIRMED_EVENTS_SCHEMA = vol.Schema(
 
 SERVICE_REFRESH_NOW_SCHEMA = vol.Schema(
     {
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+
+SERVICE_TRANSITION_BOOKING_SCHEMA = vol.Schema(
+    {
+        vol.Required("transaction_id"): cv.string,
         vol.Optional("config_entry_id"): cv.string,
     }
 )
@@ -337,6 +354,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise HomeAssistantError("No coordinator available")
         await coord.fire_confirmed_events_since(cutoff, dry_run=False)
 
+    async def _async_call_transition(
+        call: ServiceCall, transition: str
+    ) -> None:
+        """Shared implementation for accept_booking / decline_booking."""
+        transaction_id = (call.data.get("transaction_id") or "").strip()
+        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
+            raise HomeAssistantError(
+                "transaction_id must be a valid UUID format"
+            )
+
+        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
+        api_client = entry_data["api"]
+        coord = entry_data.get("coordinator")
+
+        try:
+            await api_client.transition_transaction(transaction_id, transition)
+        except AuthenticationError as err:
+            raise HomeAssistantError(
+                "Authentication failed. Please reconfigure the integration."
+            ) from err
+        except APIError as err:
+            raise HomeAssistantError(
+                f"Failed to {transition}: {err}"
+            ) from err
+
+        # Refresh data so sensors reflect the new state quickly
+        if coord:
+            await coord.async_request_refresh()
+
+    async def async_accept_booking(call: ServiceCall) -> None:
+        """Accept a booking request."""
+        await _async_call_transition(call, TRANSITION_ACCEPT)
+
+    async def async_decline_booking(call: ServiceCall) -> None:
+        """Decline a booking request."""
+        await _async_call_transition(call, TRANSITION_DECLINE)
+
     # Register services (each independently to handle upgrades)
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
         hass.services.async_register(
@@ -370,6 +424,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=SERVICE_FIRE_CONFIRMED_EVENTS_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_ACCEPT_BOOKING):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_ACCEPT_BOOKING,
+            async_accept_booking,
+            schema=SERVICE_TRANSITION_BOOKING_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_DECLINE_BOOKING):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DECLINE_BOOKING,
+            async_decline_booking,
+            schema=SERVICE_TRANSITION_BOOKING_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Listen for options updates
@@ -390,6 +460,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_REFRESH_NOW,
                 SERVICE_MARK_MESSAGE_SENT,
                 SERVICE_FIRE_CONFIRMED_EVENTS,
+                SERVICE_ACCEPT_BOOKING,
+                SERVICE_DECLINE_BOOKING,
             ):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
@@ -412,6 +484,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         "message_sent": bool,
         "message_sent_at": str (ISO timestamp) or None,
         "event_fired_at": str (ISO timestamp) or None,
+        "request_event_fired_at": str (ISO timestamp) or None,
     }
     """
 
@@ -444,6 +517,9 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self._stored_data.setdefault("transaction_states", {})
         self._stored_data.setdefault("sent_messages", {})
 
+        # Listings cache (refreshed each update)
+        self.listings: list[dict[str, Any]] = []
+
         # Diagnostics for debugging
         self.last_fetch_utc: str | None = None
         self.last_success_utc: str | None = None
@@ -451,6 +527,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self.pages_fetched: int = 0
         self.newest_transaction_id: str | None = None
         self.confirmed_new_count: int = 0
+        self.request_new_count: int = 0
 
     async def _async_update_data(self) -> list[dict[str, Any]]:
         """Fetch data from API with detailed debug logging."""
@@ -478,9 +555,18 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 new_data[CONF_REFRESH_TOKEN] = self.api.refresh_token
                 self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
+            # Detect newly received booking requests and fire events
+            self.request_new_count = await self._detect_booking_requests(bookings)
+
             # Detect newly confirmed bookings and fire events
             confirmed_count = await self._detect_confirmed_bookings(bookings)
             self.confirmed_new_count = confirmed_count
+
+            # Refresh own_listings (best-effort; failures don't fail the update)
+            try:
+                self.listings = await self.api.get_own_listings()
+            except (APIError, AuthenticationError) as err:
+                _LOGGER.warning("Failed to refresh own_listings: %s", err)
 
             # Find newest transaction by last_transitioned_at
             newest_txn = self._find_newest_transaction(bookings)
@@ -697,6 +783,83 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             await self._store.async_save(self._stored_data)
 
         return confirmed_count
+
+    async def _detect_booking_requests(
+        self, bookings: list[dict[str, Any]]
+    ) -> int:
+        """Detect newly received booking requests and fire events.
+
+        A request is "newly received" when ``last_transition`` is in
+        ``REQUEST_TRANSITIONS`` and we have not already fired the request
+        event for that transitioned_at value.
+        """
+        now = datetime.now(timezone.utc)
+        transaction_states = self._stored_data.get("transaction_states", {})
+        changes_made = False
+        request_count = 0
+
+        for booking in bookings:
+            txn_id = booking.get("transaction_id")
+            last_transition = booking.get("last_transition")
+            last_transitioned_at = booking.get("last_transitioned_at")
+
+            if not txn_id or last_transition not in REQUEST_TRANSITIONS:
+                continue
+
+            previously = transaction_states.get(txn_id)
+            already_fired_at = (
+                previously.get("request_event_fired_at") if previously else None
+            )
+            already_fired_for_same_transition = (
+                already_fired_at is not None
+                and previously is not None
+                and previously.get("last_transitioned_at") == last_transitioned_at
+            )
+            if already_fired_for_same_transition:
+                continue
+
+            request_count += 1
+            _LOGGER.info(
+                "Booking request received: txn=%s transition=%s customer=%s listing=%s",
+                txn_id,
+                last_transition,
+                booking.get("customer_display_name") or booking.get("customer_first_name", ""),
+                booking.get("listing_title", ""),
+            )
+
+            event_data = {
+                "transaction_id": txn_id,
+                "last_transition": last_transition,
+                "last_transitioned_at": last_transitioned_at,
+                "customer_first_name": booking.get("customer_first_name"),
+                "customer_display_name": booking.get("customer_display_name"),
+                "listing_title": booking.get("listing_title"),
+                "listing_id": booking.get("listing_id"),
+                "booking_start": booking.get("booking_start"),
+                "booking_end": booking.get("booking_end"),
+                "payout_total_aud": booking.get("payout_total_aud"),
+                "timestamp": now.isoformat(),
+            }
+            self.hass.bus.async_fire(EVENT_BOOKING_REQUEST_RECEIVED, event_data)
+
+            new_state = dict(previously) if previously else {
+                "last_transition": last_transition,
+                "last_transitioned_at": last_transitioned_at,
+                "message_sent": False,
+                "message_sent_at": None,
+                "event_fired_at": None,
+            }
+            new_state["last_transition"] = last_transition
+            new_state["last_transitioned_at"] = last_transitioned_at
+            new_state["request_event_fired_at"] = now.isoformat()
+            transaction_states[txn_id] = new_state
+            changes_made = True
+
+        if changes_made:
+            self._stored_data["transaction_states"] = transaction_states
+            await self._store.async_save(self._stored_data)
+
+        return request_count
 
     async def fire_confirmed_events_since(
         self,

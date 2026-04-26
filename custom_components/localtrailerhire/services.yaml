@@ -78,3 +78,41 @@ fire_confirmed_events:
       selector:
         config_entry:
           integration: localtrailerhire
+
+accept_booking:
+  name: Accept Booking
+  description: Accept a pending booking request. Calls the transition/accept transition on the Sharetribe transaction.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      description: The UUID of the booking transaction to accept.
+      required: true
+      example: "12345678-1234-1234-1234-123456789abc"
+      selector:
+        text:
+    config_entry_id:
+      name: Config Entry
+      description: Which Local Trailer Hire entry to use. Required only if multiple entries are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+decline_booking:
+  name: Decline Booking
+  description: Decline a pending booking request. Calls the transition/decline transition on the Sharetribe transaction.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      description: The UUID of the booking transaction to decline.
+      required: true
+      example: "12345678-1234-1234-1234-123456789abc"
+      selector:
+        text:
+    config_entry_id:
+      name: Config Entry
+      description: Which Local Trailer Hire entry to use. Required only if multiple entries are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire

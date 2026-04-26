@@ -8,6 +8,8 @@ DOMAIN: Final = "localtrailerhire"
 # API endpoints
 AUTH_TOKEN_URL: Final = "https://flex-api.sharetribe.com/v1/auth/token"
 TRANSACTIONS_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/query"
+TRANSITION_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/transition"
+OWN_LISTINGS_URL: Final = "https://flex-api.sharetribe.com/v1/api/own_listings/query"
 
 # Default configuration
 DEFAULT_SCAN_INTERVAL: Final = 10  # minutes
@@ -80,6 +82,12 @@ CATEGORY_IN_PROGRESS: Final = "in_progress"
 CATEGORY_PAST: Final = "past"
 CATEGORY_UNKNOWN: Final = "unknown"
 
+# Listing states reported by Sharetribe
+LISTING_STATE_PUBLISHED: Final = "published"
+LISTING_STATE_CLOSED: Final = "closed"
+LISTING_STATE_DRAFT: Final = "draft"
+LISTING_STATE_PENDING_APPROVAL: Final = "pendingApproval"
+
 # Transitions that indicate earned/completed payout
 PAYOUT_TRANSITIONS: Final = [
     "transition/complete",
@@ -113,6 +121,16 @@ CONFIRMED_TRANSITIONS: Final = frozenset([
     "transition/change-non-refundable-booking",
 ])
 
+# Transitions that indicate an incoming booking request awaiting host action
+REQUEST_TRANSITIONS: Final = frozenset([
+    "transition/request-payment",
+    "transition/request-payment-after-enquiry",
+])
+
+# Transition names sent to /transactions/transition for accept / decline
+TRANSITION_ACCEPT: Final = "transition/accept"
+TRANSITION_DECLINE: Final = "transition/decline"
+
 # Maximum pages to fetch (safety cap)
 MAX_PAGES: Final = 50
 
@@ -121,9 +139,12 @@ SERVICE_SEND_MESSAGE: Final = "send_message"
 SERVICE_REFRESH_NOW: Final = "refresh_now"
 SERVICE_FIRE_CONFIRMED_EVENTS: Final = "fire_confirmed_events"
 SERVICE_MARK_MESSAGE_SENT: Final = "mark_message_sent"
+SERVICE_ACCEPT_BOOKING: Final = "accept_booking"
+SERVICE_DECLINE_BOOKING: Final = "decline_booking"
 
 # Event names
 EVENT_BOOKING_CONFIRMED: Final = "localtrailerhire_booking_confirmed"
+EVENT_BOOKING_REQUEST_RECEIVED: Final = "localtrailerhire_booking_request_received"
 EVENT_MESSAGE_SENT: Final = "localtrailerhire_message_sent"
 
 # Storage keys

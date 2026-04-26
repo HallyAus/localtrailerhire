@@ -16,8 +16,10 @@ from .const import (
     DEFAULT_PER_PAGE,
     MAX_PAGES,
     MESSAGE_SEND_URL,
+    OWN_LISTINGS_URL,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
+    TRANSITION_URL,
 )
 from .util import parse_iso_datetime
 
@@ -620,6 +622,202 @@ class SharetribeFlexAPI:
                 type(err).__name__,
             )
             raise APIError(f"Network error: {type(err).__name__}") from err
+
+    async def transition_transaction(
+        self,
+        transaction_id: str,
+        transition: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Transition a transaction to a new state (accept, decline, cancel, ...).
+
+        Sharetribe accepts both JSON and Transit payloads on this endpoint;
+        we use JSON because the body is plain string fields plus an optional
+        params object. Returns ``{"success": True, "status_code": ...}``.
+        """
+        if not transaction_id:
+            raise APIError("transaction_id is required")
+        if not transition:
+            raise APIError("transition is required")
+
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "id": transaction_id,
+            "transition": transition,
+            "params": params or {},
+        }
+
+        return await self._post_transition_with_retry(
+            body=body, headers=headers, retry_auth=True
+        )
+
+    async def _post_transition_with_retry(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+        retry_auth: bool,
+    ) -> dict[str, Any]:
+        """POST to /transactions/transition with one 401 retry."""
+        try:
+            async with self._session.post(
+                TRANSITION_URL, json=body, headers=headers
+            ) as response:
+                status_code = response.status
+
+                if status_code == 401 and retry_auth:
+                    _LOGGER.debug("Got 401 on transition, refreshing token")
+                    await self._refresh_access_token(force=True)
+                    headers["Authorization"] = f"Bearer {self._access_token}"
+                    return await self._post_transition_with_retry(
+                        body=body, headers=headers, retry_auth=False
+                    )
+
+                if status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    _LOGGER.warning(
+                        "Rate limited on transition, waiting %ds", retry_after
+                    )
+                    await asyncio.sleep(retry_after)
+                    return await self._post_transition_with_retry(
+                        body=body, headers=headers, retry_auth=retry_auth
+                    )
+
+                if status_code >= 400:
+                    text = await response.text()
+                    _LOGGER.error(
+                        "Transition failed: status=%d, transition=%s, response=%s",
+                        status_code,
+                        body.get("transition"),
+                        text[:500] if text else "(empty)",
+                    )
+                    raise APIError(
+                        f"Transition {body.get('transition')} failed "
+                        f"(status {status_code})"
+                    )
+
+                _LOGGER.info(
+                    "Transition succeeded: %s on %s",
+                    body.get("transition"),
+                    body.get("id"),
+                )
+                return {"success": True, "status_code": status_code}
+
+        except aiohttp.ClientError as err:
+            _LOGGER.error("Network error during transition: %s", type(err).__name__)
+            raise APIError(f"Network error: {type(err).__name__}") from err
+
+    async def get_own_listings(self) -> list[dict[str, Any]]:
+        """Fetch all of the authenticated provider's own listings.
+
+        Returns a list of simplified dicts:
+        ``{id, title, state, price_aud, deleted, image_url}``.
+        """
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        params = {
+            "per_page": "100",
+            "include": "images",
+        }
+
+        listings: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params["page"] = str(page)
+            result, _meta = await self._request_with_retry(
+                "GET", OWN_LISTINGS_URL, headers=headers, params=params
+            )
+
+            data = result.get("data", [])
+            included = result.get("included", [])
+            images_map = self._build_images_map(included)
+
+            for item in data:
+                listing = self._extract_listing(item, images_map)
+                if listing is not None:
+                    listings.append(listing)
+
+            if len(data) < int(params["per_page"]):
+                break
+            if page >= MAX_PAGES:
+                _LOGGER.warning("Hit MAX_PAGES while fetching own_listings")
+                break
+            page += 1
+
+        _LOGGER.debug("Fetched %d own listings", len(listings))
+        return listings
+
+    @classmethod
+    def _build_images_map(
+        cls, included: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """Build ``{image_id: best_url}`` from the JSON-API included array."""
+        images: dict[str, str] = {}
+        for item in included:
+            if item.get("type") != "image":
+                continue
+            image_id = cls._extract_uuid(item.get("id"))
+            if not image_id:
+                continue
+            variants = (
+                item.get("attributes", {}).get("variants", {}) or {}
+            )
+            # Prefer a reasonably sized variant; fall back to anything.
+            for preferred in ("landscape-crop2x", "landscape-crop", "default"):
+                variant = variants.get(preferred)
+                if variant and variant.get("url"):
+                    images[image_id] = variant["url"]
+                    break
+            else:
+                for variant in variants.values():
+                    if isinstance(variant, dict) and variant.get("url"):
+                        images[image_id] = variant["url"]
+                        break
+        return images
+
+    @classmethod
+    def _extract_listing(
+        cls,
+        item: dict[str, Any],
+        images_map: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Extract a simplified listing dict from one own_listings entry."""
+        listing_id = cls._extract_uuid(item.get("id"))
+        if not listing_id:
+            return None
+
+        attrs = item.get("attributes", {}) or {}
+        relationships = item.get("relationships", {}) or {}
+
+        # First image, if any
+        image_url: str | None = None
+        images_rel = relationships.get("images", {}).get("data") or []
+        if isinstance(images_rel, list) and images_rel:
+            first_image_id = cls._extract_uuid(images_rel[0].get("id"))
+            if first_image_id:
+                image_url = images_map.get(first_image_id)
+
+        return {
+            "id": listing_id,
+            "title": attrs.get("title"),
+            "state": attrs.get("state"),
+            "deleted": attrs.get("deleted", False),
+            "price_aud": cls._format_money(attrs.get("price")),
+            "image_url": image_url,
+        }
 
     def _process_transactions(
         self,
