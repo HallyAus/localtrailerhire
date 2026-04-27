@@ -2,7 +2,10 @@ name: Release
 
 # Creates a GitHub release whenever the manifest version is unreleased.
 # Reads the tag from custom_components/localtrailerhire/manifest.json by
-# default, or accepts an override via workflow_dispatch input.
+# default, or accepts an override via workflow_dispatch input. Builds a
+# release-asset zip of the integration so HACS can install via release
+# downloads (which are not subject to the 60/hr unauthenticated GitHub API
+# rate limit that the /zipball endpoint hits).
 on:
   push:
     branches: [main]
@@ -45,6 +48,14 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build integration zip
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd custom_components/localtrailerhire
+          zip -r "$GITHUB_WORKSPACE/localtrailerhire.zip" .
+          ls -la "$GITHUB_WORKSPACE/localtrailerhire.zip"
+          unzip -l "$GITHUB_WORKSPACE/localtrailerhire.zip" | head -20
+
       - name: Create release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
@@ -53,37 +64,11 @@ jobs:
           name: ${{ steps.tag.outputs.tag }}
           target_commitish: main
           generate_release_notes: true
+          files: localtrailerhire.zip
           body: |
-            Initial tagged release of the Local Trailer Hire integration for
-            Home Assistant.
+            Home Assistant integration for the LocalTrailerHire (Sharetribe Flex)
+            marketplace. Install via HACS — the attached `localtrailerhire.zip`
+            is downloaded directly (no GitHub API rate limit).
 
-            ## Highlights
-
-            **Sensors**
-            - Booking counts (upcoming, in-progress, pending requests, unknown dates, total)
-            - Next booking (start, end, customer, payout)
-            - Earnings (total, earned, scheduled, payin, last 30 days, MTD, YTD)
-            - Per-listing devices (state, daily price, active bookings)
-
-            **Calendar**
-            - `calendar.local_trailer_hire_bookings` — every booking as a native HA calendar event
-
-            **Binary sensor**
-            - `binary_sensor.local_trailer_hire_pending_action` — on while a booking request awaits accept/decline
-
-            **Services**
-            - `send_message`, `refresh_now`, `mark_message_sent`, `fire_confirmed_events`
-            - `accept_booking`, `decline_booking`
-            - All accept an optional `config_entry_id` for multi-instance setups
-
-            **Events**
-            - `localtrailerhire_booking_request_received`
-            - `localtrailerhire_booking_confirmed`
-            - `localtrailerhire_message_sent`
-
-            **Other**
-            - Storage v1 → v2 migration (transaction states)
-            - Diagnostics endpoint with redacted output
-            - Privacy controls (mask phone, hide licence)
-            - GitHub Actions for hassfest, HACS validation, and pytest
-            - Sample dashboard at `dashboards/local_trailer_hire.yaml`
+            See the README for the full feature list and the sample dashboard
+            at `dashboards/local_trailer_hire.yaml`.
