@@ -29,7 +29,8 @@ jobs:
         with:
           category: integration
           # ``brands`` requires an upstream PR to home-assistant/brands.
-          # ``description`` and ``topics`` are repository-level settings on
-          # github.com (Settings → top of repo page) that the CI cannot fix
-          # itself. Remove these ignores once they're set.
-          ignore: brands,description,topics
+          # ``description`` and ``topics`` are repo settings on github.com
+          # (Settings → top of repo page); the CI cannot fix them. Remove
+          # these ignores once they're set. The HACS action splits this
+          # value on whitespace, so use spaces (not commas).
+          ignore: brands description topics
