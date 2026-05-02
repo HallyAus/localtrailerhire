@@ -1,0 +1,11 @@
+# pytest config for the Local Trailer Hire integration tests.
+# This file ensures pytest-asyncio uses auto mode in CI (where there's no
+# workspace-level pyproject.toml).
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
