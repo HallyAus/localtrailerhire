@@ -29,15 +29,20 @@ from .const import (
     CONFIRMED_TRANSITIONS,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
+    DEFAULT_REVIEW_CONTENT,
+    DEFAULT_REVIEW_RATING,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_BOOKING_CONFIRMED,
     EVENT_BOOKING_REQUEST_RECEIVED,
     EVENT_MESSAGE_SENT,
+    EVENT_REVIEW_LEFT,
+    PROVIDER_REVIEW_TRANSITIONS,
     REQUEST_TRANSITIONS,
     SERVICE_ACCEPT_BOOKING,
     SERVICE_DECLINE_BOOKING,
     SERVICE_FIRE_CONFIRMED_EVENTS,
+    SERVICE_LEAVE_REVIEW,
     SERVICE_MARK_MESSAGE_SENT,
     SERVICE_REFRESH_NOW,
     SERVICE_SEND_MESSAGE,
@@ -122,6 +127,18 @@ SERVICE_REFRESH_NOW_SCHEMA = vol.Schema(
 SERVICE_TRANSITION_BOOKING_SCHEMA = vol.Schema(
     {
         vol.Required("transaction_id"): cv.string,
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+
+SERVICE_LEAVE_REVIEW_SCHEMA = vol.Schema(
+    {
+        vol.Required("transaction_id"): cv.string,
+        vol.Optional("rating", default=DEFAULT_REVIEW_RATING): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=5)
+        ),
+        vol.Optional("review_content", default=DEFAULT_REVIEW_CONTENT): cv.string,
+        vol.Optional("transition"): vol.In(PROVIDER_REVIEW_TRANSITIONS),
         vol.Optional("config_entry_id"): cv.string,
     }
 )
@@ -391,6 +408,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Decline a booking request."""
         await _async_call_transition(call, TRANSITION_DECLINE)
 
+    async def async_leave_review(call: ServiceCall) -> None:
+        """Post a provider review on a completed booking."""
+        transaction_id = (call.data.get("transaction_id") or "").strip()
+        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
+            raise HomeAssistantError(
+                "transaction_id must be a valid UUID format"
+            )
+
+        rating = call.data.get("rating", DEFAULT_REVIEW_RATING)
+        content = call.data.get("review_content", DEFAULT_REVIEW_CONTENT)
+        transition = call.data.get("transition")
+
+        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
+        api_client = entry_data["api"]
+        coord = entry_data.get("coordinator")
+
+        try:
+            result = await api_client.leave_review(
+                transaction_id,
+                rating=rating,
+                content=content,
+                transition=transition,
+            )
+        except AuthenticationError as err:
+            raise HomeAssistantError(
+                "Authentication failed. Please reconfigure the integration."
+            ) from err
+        except APIError as err:
+            raise HomeAssistantError(f"Failed to leave review: {err}") from err
+
+        hass.bus.async_fire(
+            EVENT_REVIEW_LEFT,
+            {
+                "transaction_id": transaction_id,
+                "transition": result.get("transition"),
+                "rating": rating,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        if coord:
+            await coord.async_request_refresh()
+
     # Register services (each independently to handle upgrades)
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
         hass.services.async_register(
@@ -440,6 +500,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=SERVICE_TRANSITION_BOOKING_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_LEAVE_REVIEW):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_LEAVE_REVIEW,
+            async_leave_review,
+            schema=SERVICE_LEAVE_REVIEW_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Listen for options updates
@@ -462,6 +530,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_FIRE_CONFIRMED_EVENTS,
                 SERVICE_ACCEPT_BOOKING,
                 SERVICE_DECLINE_BOOKING,
+                SERVICE_LEAVE_REVIEW,
             ):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)

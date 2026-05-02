@@ -116,3 +116,50 @@ decline_booking:
       selector:
         config_entry:
           integration: localtrailerhire
+
+leave_review:
+  name: Leave Review
+  description: Post a provider review for a completed booking. By default tries `transition/review-1-by-provider` (provider goes first); falls back to `transition/review-2-by-provider` if the customer has already reviewed.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      description: The UUID of the booking transaction to review.
+      required: true
+      example: "12345678-1234-1234-1234-123456789abc"
+      selector:
+        text:
+    rating:
+      name: Rating
+      description: Star rating (1-5). Defaults to 5.
+      required: false
+      default: 5
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+    review_content:
+      name: Review content
+      description: The text of the review. A friendly default is used if omitted.
+      required: false
+      example: "Great customer, easy communication, trailer back in great shape."
+      selector:
+        text:
+          multiline: true
+    transition:
+      name: Transition (optional)
+      description: Force a specific review transition. Leave empty to auto-select (review-1, falling back to review-2).
+      required: false
+      selector:
+        select:
+          options:
+            - "transition/review-1-by-provider"
+            - "transition/review-2-by-provider"
+    config_entry_id:
+      name: Config Entry
+      description: Which Local Trailer Hire entry to use. Required only if multiple entries are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire

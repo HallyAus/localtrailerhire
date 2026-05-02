@@ -131,6 +131,23 @@ REQUEST_TRANSITIONS: Final = frozenset([
 TRANSITION_ACCEPT: Final = "transition/accept"
 TRANSITION_DECLINE: Final = "transition/decline"
 
+# Provider review transitions. ``review-1`` is used when the provider reviews
+# first; ``review-2`` after the customer has already reviewed. The ``leave_review``
+# service tries ``review-1`` and falls back to ``review-2`` on failure.
+TRANSITION_REVIEW_BY_PROVIDER_FIRST: Final = "transition/review-1-by-provider"
+TRANSITION_REVIEW_BY_PROVIDER_SECOND: Final = "transition/review-2-by-provider"
+PROVIDER_REVIEW_TRANSITIONS: Final = (
+    TRANSITION_REVIEW_BY_PROVIDER_FIRST,
+    TRANSITION_REVIEW_BY_PROVIDER_SECOND,
+)
+
+# Default review content used when the caller doesn't supply one.
+DEFAULT_REVIEW_RATING: Final = 5
+DEFAULT_REVIEW_CONTENT: Final = (
+    "Thanks for hiring with us — easy communication, trailer returned on time "
+    "and in great condition. Welcome back any time!"
+)
+
 # Maximum pages to fetch (safety cap)
 MAX_PAGES: Final = 50
 
@@ -141,11 +158,13 @@ SERVICE_FIRE_CONFIRMED_EVENTS: Final = "fire_confirmed_events"
 SERVICE_MARK_MESSAGE_SENT: Final = "mark_message_sent"
 SERVICE_ACCEPT_BOOKING: Final = "accept_booking"
 SERVICE_DECLINE_BOOKING: Final = "decline_booking"
+SERVICE_LEAVE_REVIEW: Final = "leave_review"
 
 # Event names
 EVENT_BOOKING_CONFIRMED: Final = "localtrailerhire_booking_confirmed"
 EVENT_BOOKING_REQUEST_RECEIVED: Final = "localtrailerhire_booking_request_received"
 EVENT_MESSAGE_SENT: Final = "localtrailerhire_message_sent"
+EVENT_REVIEW_LEFT: Final = "localtrailerhire_review_left"
 
 # Storage keys
 STORAGE_KEY: Final = "localtrailerhire_data"

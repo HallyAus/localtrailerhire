@@ -113,5 +113,33 @@
         "name": "Bookings Total Payin"
       }
     }
+  },
+  "services": {
+    "leave_review": {
+      "name": "Leave Review",
+      "description": "Post a provider review on a completed booking.",
+      "fields": {
+        "transaction_id": {
+          "name": "Transaction ID",
+          "description": "The UUID of the booking transaction."
+        },
+        "rating": {
+          "name": "Rating",
+          "description": "Star rating from 1 to 5 (default 5)."
+        },
+        "review_content": {
+          "name": "Review content",
+          "description": "Free-text review."
+        },
+        "transition": {
+          "name": "Transition",
+          "description": "Force review-1 or review-2; leave empty to auto-select."
+        },
+        "config_entry_id": {
+          "name": "Config Entry",
+          "description": "Which Local Trailer Hire entry to use."
+        }
+      }
+    }
   }
 }

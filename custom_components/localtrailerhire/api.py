@@ -659,6 +659,67 @@ class SharetribeFlexAPI:
             body=body, headers=headers, retry_auth=True
         )
 
+    async def leave_review(
+        self,
+        transaction_id: str,
+        rating: int,
+        content: str,
+        transition: str | None = None,
+    ) -> dict[str, Any]:
+        """Post a provider review on a completed booking.
+
+        Sharetribe's default trailer-hire process exposes two provider-review
+        transitions: ``transition/review-1-by-provider`` (provider goes first)
+        and ``transition/review-2-by-provider`` (after the customer has
+        already reviewed). When ``transition`` is None, ``review-1`` is tried
+        first and ``review-2`` is used as a fallback if Sharetribe rejects it
+        (typically because the customer reviewed first).
+
+        Returns ``{"success": True, "status_code": ..., "transition": <used>}``.
+        """
+        if not 1 <= int(rating) <= 5:
+            raise APIError("rating must be between 1 and 5")
+        if not content or not content.strip():
+            raise APIError("review content cannot be empty")
+
+        from .const import (
+            TRANSITION_REVIEW_BY_PROVIDER_FIRST,
+            TRANSITION_REVIEW_BY_PROVIDER_SECOND,
+        )
+
+        params = {
+            "reviewRating": int(rating),
+            "reviewContent": content.strip(),
+        }
+
+        candidates: list[str]
+        if transition:
+            candidates = [transition]
+        else:
+            candidates = [
+                TRANSITION_REVIEW_BY_PROVIDER_FIRST,
+                TRANSITION_REVIEW_BY_PROVIDER_SECOND,
+            ]
+
+        last_err: APIError | None = None
+        for trans in candidates:
+            try:
+                result = await self.transition_transaction(
+                    transaction_id, trans, params=params
+                )
+                return {**result, "transition": trans}
+            except APIError as err:
+                last_err = err
+                _LOGGER.debug(
+                    "Review transition %s failed (%s); trying next candidate",
+                    trans,
+                    err,
+                )
+                continue
+
+        assert last_err is not None  # candidates is non-empty
+        raise last_err
+
     async def _post_transition_with_retry(
         self,
         body: dict[str, Any],

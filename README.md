@@ -420,6 +420,48 @@ Sharetribe transaction.
 - `transaction_id` (required): The UUID of the booking transaction
 - `config_entry_id` (optional): Target a specific config entry
 
+### `localtrailerhire.leave_review`
+
+Post a provider review on a completed booking. By default tries
+`transition/review-1-by-provider` (provider goes first); falls back to
+`transition/review-2-by-provider` if Sharetribe rejects it (typically
+because the customer has already reviewed).
+
+**Parameters:**
+- `transaction_id` (required): The UUID of the booking transaction
+- `rating` (optional, default `5`): Star rating from 1 to 5
+- `review_content` (optional): The review text. A friendly default is used if omitted.
+- `transition` (optional): Force `transition/review-1-by-provider` or
+  `transition/review-2-by-provider`. Leave empty for auto-select.
+- `config_entry_id` (optional): Target a specific config entry
+
+Fires the `localtrailerhire_review_left` event on success.
+
+**Example: auto-leave a 5-star review 2 hours after the booking ends**
+
+```yaml
+automation:
+  - alias: "LocalTrailerHire auto 5-star review"
+    description: "Leave a 5-star review 2 hours after pickup window ends"
+    trigger:
+      - platform: state
+        entity_id: sensor.local_trailer_hire_next_booking_end
+    action:
+      - delay:
+          hours: 2
+      - service: localtrailerhire.leave_review
+        data:
+          transaction_id: "{{ state_attr('sensor.local_trailer_hire_next_booking_start', 'transaction_id') }}"
+          rating: 5
+          review_content: >-
+            Thanks for hiring with us — easy communication and the trailer
+            came back in great shape. Welcome back any time!
+```
+
+For a more reliable trigger, drive it from the
+`localtrailerhire_booking_confirmed` event with a delay until the booking
+end date — that gives you the transaction id directly in `trigger.event.data`.
+
 ## Events
 
 ### `localtrailerhire_booking_request_received`
@@ -471,6 +513,17 @@ Fired when a message is successfully sent via the `send_message` service.
 **Event Data:**
 - `transaction_id`: The transaction the message was sent to
 - `timestamp`: When the message was sent
+
+### `localtrailerhire_review_left`
+
+Fired when a provider review is successfully posted via the `leave_review`
+service.
+
+**Event Data:**
+- `transaction_id`: The transaction the review was posted on
+- `transition`: Which review transition was used (`review-1` or `review-2`)
+- `rating`: The star rating that was posted (1-5)
+- `timestamp`: When the review was posted
 
 ## Sample Dashboard
 
