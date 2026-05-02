@@ -5,6 +5,13 @@ from typing import Final
 
 DOMAIN: Final = "localtrailerhire"
 
+# LocalTrailerHire's public web-application client id.
+# This is *not* a secret — it's the same value used by every browser session
+# on localtrailerhire.com.au and is visible in any network trace. The
+# integration is locked to this single marketplace (see hacs.json country: AU)
+# so we hardcode it rather than asking each user to find it themselves.
+LOCALTRAILERHIRE_CLIENT_ID: Final = "ed212165-eae2-4fcc-8739-e057ca16d2df"
+
 # API endpoints
 AUTH_TOKEN_URL: Final = "https://flex-api.sharetribe.com/v1/auth/token"
 TRANSACTIONS_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/query"

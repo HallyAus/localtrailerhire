@@ -108,19 +108,16 @@ Bookings are categorized based on their dates relative to the current time (UTC)
 
 ### Required Credentials
 
-You'll need the following from your Sharetribe Flex marketplace:
+Just two things — the same email and password you log in with on
+[localtrailerhire.com.au](https://localtrailerhire.com.au):
 
-- **Client ID**: Your Sharetribe Flex application client ID
-- **Username**: Your marketplace account email (optional if using refresh token)
-- **Password**: Your marketplace account password (optional if using refresh token)
-- **Refresh Token**: Alternative to username/password for token-based authentication
+- **Email**: Your LocalTrailerHire account email
+- **Password**: Your LocalTrailerHire account password
 
-### Getting Your Client ID
-
-1. Log in to [Sharetribe Console](https://flex-console.sharetribe.com/)
-2. Go to **Build** > **Applications**
-3. Create or select an application
-4. Copy the Client ID
+That's it. The integration handles the marketplace client ID and OAuth
+token refresh automatically. If you'd rather not store your password,
+you can paste a refresh token instead — but for most people email +
+password is the easiest path.
 
 ### Options
 

@@ -37,6 +37,7 @@ from .const import (
     EVENT_BOOKING_REQUEST_RECEIVED,
     EVENT_MESSAGE_SENT,
     EVENT_REVIEW_LEFT,
+    LOCALTRAILERHIRE_CLIENT_ID,
     PROVIDER_REVIEW_TRANSITIONS,
     REQUEST_TRANSITIONS,
     SERVICE_ACCEPT_BOOKING,
@@ -189,8 +190,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stored_data.setdefault("sent_messages", {})
     stored_data.setdefault("transaction_states", {})
 
-    # Get configuration
-    client_id = entry.data[CONF_CLIENT_ID]
+    # Get configuration. ``client_id`` is now hardcoded to the LocalTrailerHire
+    # marketplace; we still read from entry.data for backwards compat with
+    # 1.x installs that stored it explicitly.
+    client_id = entry.data.get(CONF_CLIENT_ID) or LOCALTRAILERHIRE_CLIENT_ID
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     refresh_token = entry.data.get(CONF_REFRESH_TOKEN)

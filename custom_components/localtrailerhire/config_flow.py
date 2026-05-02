@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    LOCALTRAILERHIRE_CLIENT_ID,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
@@ -51,7 +52,8 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._client_id = user_input.get(CONF_CLIENT_ID, "")
+            # Client id is hardcoded — LocalTrailerHire is a single marketplace.
+            self._client_id = LOCALTRAILERHIRE_CLIENT_ID
             self._username = user_input.get(CONF_USERNAME)
             self._password = user_input.get(CONF_PASSWORD)
             self._refresh_token = user_input.get(CONF_REFRESH_TOKEN)
@@ -81,8 +83,15 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         if new_refresh_token:
                             self._refresh_token = new_refresh_token
 
-                        # Check for existing entry
-                        await self.async_set_unique_id(self._client_id)
+                        # Use the username (email) as the unique id — that's
+                        # the real per-provider identity. Falls back to a
+                        # refresh-token prefix when password auth wasn't used.
+                        unique_id = (
+                            self._username
+                            or (self._refresh_token or "")[:32]
+                            or self._client_id
+                        )
+                        await self.async_set_unique_id(unique_id)
                         self._abort_if_unique_id_configured()
 
                         return await self.async_step_options()
@@ -97,7 +106,6 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_CLIENT_ID): str,
                     vol.Optional(CONF_USERNAME): str,
                     vol.Optional(CONF_PASSWORD): str,
                     vol.Optional(CONF_REFRESH_TOKEN): str,
@@ -200,7 +208,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 session = async_get_clientsession(self.hass)
                 success, new_refresh_token = await validate_credentials(
                     session=session,
-                    client_id=user_input.get(CONF_CLIENT_ID, ""),
+                    client_id=LOCALTRAILERHIRE_CLIENT_ID,
                     username=user_input.get(CONF_USERNAME),
                     password=user_input.get(CONF_PASSWORD),
                     refresh_token=user_input.get(CONF_REFRESH_TOKEN),
@@ -213,7 +221,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                     if entry:
                         data = dict(entry.data)
-                        data[CONF_CLIENT_ID] = user_input.get(CONF_CLIENT_ID, "")
+                        data[CONF_CLIENT_ID] = LOCALTRAILERHIRE_CLIENT_ID
                         if new_refresh_token:
                             data[CONF_REFRESH_TOKEN] = new_refresh_token
                         if user_input.get(CONF_USERNAME):
@@ -235,7 +243,6 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_CLIENT_ID): str,
                     vol.Optional(CONF_USERNAME): str,
                     vol.Optional(CONF_PASSWORD): str,
                     vol.Optional(CONF_REFRESH_TOKEN): str,

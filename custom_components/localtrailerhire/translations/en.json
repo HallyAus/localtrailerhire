@@ -3,18 +3,16 @@
     "step": {
       "user": {
         "title": "Connect to Local Trailer Hire",
-        "description": "Enter your Sharetribe Flex credentials. You can use either username/password OR a refresh token.",
+        "description": "Sign in with your localtrailerhire.com.au account. Use the same email and password you use on the website.",
         "data": {
-          "client_id": "Client ID",
-          "username": "Username (email)",
+          "username": "Email",
           "password": "Password",
-          "refresh_token": "Refresh Token (alternative to password)"
+          "refresh_token": "Refresh Token (advanced — alternative to password)"
         },
         "data_description": {
-          "client_id": "Your Sharetribe Flex application client ID",
-          "username": "Your marketplace account email",
-          "password": "Your marketplace account password",
-          "refresh_token": "Use this instead of username/password for token-based auth"
+          "username": "Your localtrailerhire.com.au account email",
+          "password": "Your localtrailerhire.com.au account password",
+          "refresh_token": "Optional. Use this instead of email/password if you have a token from a prior session."
         }
       },
       "options": {
@@ -35,12 +33,11 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate",
-        "description": "Authentication has expired. Please re-enter your credentials.",
+        "description": "Authentication has expired. Please re-enter your localtrailerhire.com.au email and password.",
         "data": {
-          "client_id": "Client ID",
-          "username": "Username (email)",
+          "username": "Email",
           "password": "Password",
-          "refresh_token": "Refresh Token"
+          "refresh_token": "Refresh Token (optional)"
         }
       }
     },
