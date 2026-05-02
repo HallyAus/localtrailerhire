@@ -7,6 +7,34 @@
 
 A custom Home Assistant integration for [LocalTrailerHire](https://localtrailerhire.com.au) (Sharetribe Flex marketplace) that displays booking information as sensors.
 
+---
+
+## 💚 Support this project — it's my only income from it
+
+If this integration saves you time chasing bookings or messages, please use one of the referrals below. Both you and I get credit. This project is maintained in my spare time and referrals are the only thing funding ongoing development.
+
+### ⭐ Star this repo
+[**⭐ Star on GitHub**](https://github.com/HallyAus/localtrailerhire) — takes two seconds and surfaces the project to other LocalTrailerHire hosts.
+
+### 🎁 OVO Energy referral — $120–$180 credit
+Pair this with the [OVO Energy Australia HA integration](https://github.com/HallyAus/OVO_Aus_api) and track the energy cost of running your trailer-hire business too. Not an OVO customer yet?
+
+**👉 [www.ovoenergy.com.au/refer/daniel16485](https://www.ovoenergy.com.au/refer/daniel16485)**
+
+- ✅ **$120 credit** paid over 12 months on standard plans
+- ✅ **$180 credit** paid over 12 months if you choose The EV Plan
+- ✅ Both you and I receive the credit — win-win
+
+### 🛰️ Starlink referral — 1 month free
+Storing your trailers somewhere rural or running HA off a remote shed? Starlink gets you online anywhere with a clear view of sky.
+
+**👉 [starlink.com/residential?referral=RC-2455784-77014-69](https://starlink.com/residential?referral=RC-2455784-77014-69&app_source=share)**
+
+- ✅ One free month of Starlink service
+- ✅ Works anywhere in AU — bush blocks, farms, sheds out the back
+
+---
+
 ## Features
 
 - **Booking Count Sensors**: Separate sensors for upcoming, in-progress, pending requests, unknown dates, and total bookings
