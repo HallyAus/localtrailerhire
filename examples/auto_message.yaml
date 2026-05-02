@@ -1,0 +1,53 @@
+# Local Trailer Hire — auto-send booking confirmation message
+#
+# Sends a friendly welcome message to the customer the moment a booking is
+# confirmed (instant-book, payment-confirmed, or expired-refundable-period).
+# Includes pickup hint and your contact number.
+#
+# Drop this into your Home Assistant `automations.yaml` (or paste it via
+# Settings → Automations & Scenes → Create automation → three-dots → Edit
+# in YAML).
+#
+# How it works:
+#   1. Triggers on `localtrailerhire_booking_confirmed` — fired by the
+#      integration whenever a booking transitions to a confirmed state.
+#   2. Calls `localtrailerhire.send_message` with a templated message that
+#      includes the customer's first name, the listing title, and the
+#      booking start date.
+#   3. The integration's idempotency tracking (`mark_message_sent`) prevents
+#      duplicate sends for the same transaction.
+#
+# Notes:
+# - `mode: queued` with `max: 10` queues message sends if multiple bookings
+#   confirm in quick succession, so none get dropped.
+# - Replace the phone number on the last line with yours, or remove it.
+
+alias: LocalTrailerHire send booking confirmation
+description: Automatically sends a confirmation message when a new booking is confirmed
+mode: queued
+max: 10
+
+triggers:
+  - event_type: localtrailerhire_booking_confirmed
+    trigger: event
+
+conditions: []
+
+actions:
+  - action: localtrailerhire.send_message
+    data:
+      transaction_id: "{{ trigger.event.data.transaction_id }}"
+      message: >-
+        Hi {{ trigger.event.data.customer_first_name | default('there', true) }},
+
+        Thank you for booking {{ trigger.event.data.listing_title | default('your trailer', true) }}!
+
+        Your booking starts on {{
+          (trigger.event.data.booking_start | default('', true))[:10]
+          if (trigger.event.data.booking_start | default('', true)) else
+          'the scheduled date'
+        }}.
+
+        Please use Google Maps to get to the property as Apple Maps does not work.
+
+        Any issues please reach out to me on 0468 808 706

@@ -495,6 +495,17 @@ A complete production-ready automation is included at
 every confirmed booking, waits until `booking_end + 4 hours`, then posts a
 5-star review using the customer's first name and listing title.
 
+## Example automations
+
+Two ready-to-paste automations live in [`examples/`](examples/):
+
+| File | What it does |
+|---|---|
+| [`auto_message.yaml`](examples/auto_message.yaml) | Sends a welcome message the moment a booking is confirmed |
+| [`auto_review.yaml`](examples/auto_review.yaml) | Auto-posts a 5★ review 4 hours after the booking ends |
+
+See [`examples/README.md`](examples/README.md) for details and personalisation tips.
+
 ## Events
 
 ### `localtrailerhire_booking_request_received`
