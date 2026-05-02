@@ -462,6 +462,11 @@ For a more reliable trigger, drive it from the
 `localtrailerhire_booking_confirmed` event with a delay until the booking
 end date — that gives you the transaction id directly in `trigger.event.data`.
 
+A complete production-ready automation is included at
+[`examples/auto_review.yaml`](examples/auto_review.yaml). It triggers on
+every confirmed booking, waits until `booking_end + 4 hours`, then posts a
+5-star review using the customer's first name and listing title.
+
 ## Events
 
 ### `localtrailerhire_booking_request_received`

@@ -1,0 +1,62 @@
+# Local Trailer Hire — auto-leave 5-star review automation
+#
+# Drop this into your Home Assistant `automations.yaml` (or paste it via
+# Settings → Automations & Scenes → Create automation → three-dots → Edit
+# in YAML).
+#
+# How it works:
+#   1. Triggers on `localtrailerhire_booking_confirmed` — fired whenever the
+#      integration sees a booking transition to confirmed/instant-book.
+#   2. Waits until `booking_end + 4 hours` (gives the customer time to return
+#      the trailer and Sharetribe time to transition through
+#      complete-before-payout → payout-after-complete → state/delivered).
+#   3. Calls `localtrailerhire.leave_review` with rating 5 and a friendly
+#      templated message using the customer's first name and listing title.
+#
+# Notes:
+# - `mode: parallel` lets many bookings wait in parallel (one timer per
+#   confirmed booking).
+# - HA restart during the wait will drop that one delay; if you restart
+#   often during long bookings, run a manual sweep via the leave_review
+#   service from Developer Tools → Services for any booking you missed.
+# - Sharetribe enforces a review window after delivery; if the window
+#   has passed, leave_review will surface an APIError and HA will log it.
+
+alias: LocalTrailerHire auto-leave 5-star review
+description: >-
+  After every confirmed booking, wait until ``booking_end + 4 hours`` and
+  then post a 5-star provider review via the localtrailerhire integration.
+mode: parallel
+max: 50
+
+trigger:
+  - platform: event
+    event_type: localtrailerhire_booking_confirmed
+
+condition:
+  # Skip if the event somehow has no booking_end (replayed events without dates).
+  - condition: template
+    value_template: >-
+      {{ trigger.event.data.booking_end not in [none, '', 'unknown'] }}
+
+action:
+  - variables:
+      txn: "{{ trigger.event.data.transaction_id }}"
+      first_name: "{{ trigger.event.data.customer_first_name | default('there', true) }}"
+      listing_title: "{{ trigger.event.data.listing_title | default('your trailer', true) }}"
+      review_at_ts: >-
+        {{ as_timestamp(trigger.event.data.booking_end) + (4 * 3600) }}
+      seconds_until_review: >-
+        {{ [review_at_ts - as_timestamp(now()), 0] | max | int }}
+
+  - delay:
+      seconds: "{{ seconds_until_review }}"
+
+  - service: localtrailerhire.leave_review
+    data:
+      transaction_id: "{{ txn }}"
+      rating: 5
+      review_content: >-
+        Thanks {{ first_name }} for hiring with us — easy communication
+        and the trailer was returned on time and in great condition.
+        Welcome back any time!
