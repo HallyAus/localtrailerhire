@@ -342,8 +342,12 @@ class SharetribeFlexAPI:
     ) -> list[dict[str, Any]]:
         """Fetch all transactions matching the criteria.
 
-        Upcoming bookings are determined SOLELY by booking dates:
-            upcoming = booking_end >= now (UTC)
+        Each booking is categorised SOLELY by its booking dates relative to
+        UTC ``now`` (see ``_categorize``):
+            upcoming    = booking_start >= now
+            in_progress = booking_start <= now < booking_end
+            past        = booking_end < now
+            unknown     = booking_start or booking_end missing
 
         The last_transitions filter is OPTIONAL:
         - If empty/None: fetch ALL provider transactions (recommended)

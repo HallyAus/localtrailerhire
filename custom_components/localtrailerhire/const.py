@@ -96,7 +96,7 @@ LISTING_STATE_DRAFT: Final = "draft"
 LISTING_STATE_PENDING_APPROVAL: Final = "pendingApproval"
 
 # Transitions that indicate earned/completed payout
-PAYOUT_TRANSITIONS: Final = [
+PAYOUT_TRANSITIONS: Final = frozenset([
     "transition/complete",
     "transition/review-1-by-customer",
     "transition/review-1-by-provider",
@@ -105,7 +105,7 @@ PAYOUT_TRANSITIONS: Final = [
     "transition/expire-review-period",
     "transition/expire-customer-review-period",
     "transition/expire-provider-review-period",
-]
+])
 
 # Attributes
 ATTR_BOOKINGS: Final = "bookings"
