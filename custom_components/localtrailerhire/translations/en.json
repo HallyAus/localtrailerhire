@@ -43,6 +43,7 @@
     },
     "error": {
       "invalid_auth": "Invalid authentication credentials",
+      "cannot_connect": "Could not reach Local Trailer Hire. Check your connection and try again.",
       "missing_credentials": "Please provide either username/password OR a refresh token",
       "unknown": "An unexpected error occurred"
     },

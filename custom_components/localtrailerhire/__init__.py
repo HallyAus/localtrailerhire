@@ -184,9 +184,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     # Initialize storage for tracking sent messages and transaction states.
-    # ``LocalTrailerHireStore`` handles version migration on load.
-    store = LocalTrailerHireStore(hass, STORAGE_VERSION, STORAGE_KEY)
-    stored_data = await store.async_load() or {}
+    # Each config entry gets its own store keyed by entry_id; a single shared
+    # key would let multiple provider accounts clobber each other's state.
+    # ``LocalTrailerHireStore`` handles schema-version migration on load.
+    store = LocalTrailerHireStore(
+        hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry.entry_id}"
+    )
+    stored_data = await store.async_load()
+
+    if stored_data is None:
+        # One-time migration: pre-1.2 installs wrote to a single shared key.
+        # Only one entry could exist back then (uniqueness keyed on the shared
+        # client_id), so the first entry to set up adopts that data and the
+        # legacy store is removed.
+        legacy_store = LocalTrailerHireStore(hass, STORAGE_VERSION, STORAGE_KEY)
+        legacy_data = await legacy_store.async_load()
+        if legacy_data:
+            _LOGGER.info(
+                "Migrating transaction state from legacy shared store to "
+                "per-entry store for %s",
+                entry.entry_id,
+            )
+            stored_data = legacy_data
+            await store.async_save(stored_data)
+            await legacy_store.async_remove()
+
+    stored_data = stored_data or {}
     stored_data.setdefault("sent_messages", {})
     stored_data.setdefault("transaction_states", {})
 

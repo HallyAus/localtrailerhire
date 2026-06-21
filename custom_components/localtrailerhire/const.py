@@ -158,6 +158,12 @@ DEFAULT_REVIEW_CONTENT: Final = (
 # Maximum pages to fetch (safety cap)
 MAX_PAGES: Final = 50
 
+# Rate-limit (HTTP 429) handling
+# Cap the number of automatic retries so a persistently rate-limited endpoint
+# can't loop forever, and clamp the honoured Retry-After delay.
+MAX_RATE_LIMIT_RETRIES: Final = 3
+MAX_RETRY_AFTER_SECONDS: Final = 300
+
 # Service names
 SERVICE_SEND_MESSAGE: Final = "send_message"
 SERVICE_REFRESH_NOW: Final = "refresh_now"
