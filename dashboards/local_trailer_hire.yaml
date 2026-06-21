@@ -63,6 +63,42 @@ views:
             name: All time
 
       # ──────────────────────────────────────────────────────────────────
+      # Reputation & messages (v1.4.0)
+      # ──────────────────────────────────────────────────────────────────
+      - type: glance
+        title: Reputation
+        columns: 4
+        entities:
+          - entity: sensor.local_trailer_hire_rating
+            name: Rating
+          - entity: sensor.local_trailer_hire_review_count
+            name: Reviews
+          - entity: sensor.local_trailer_hire_acceptance_rate
+            name: Accept %
+          - entity: sensor.local_trailer_hire_response_rate
+            name: Response %
+
+      - type: conditional
+        conditions:
+          - entity: sensor.local_trailer_hire_awaiting_replies
+            state_not: "0"
+        card:
+          type: markdown
+          content: >
+            ## 💬 {{ states('sensor.local_trailer_hire_awaiting_replies') }}
+            message(s) awaiting your reply
+
+      - type: markdown
+        title: Recent reviews
+        content: >
+          {% for r in state_attr('sensor.local_trailer_hire_rating',
+          'recent_reviews') or [] %}
+
+          ⭐ **{{ r.rating }}** — {{ r.content }}
+
+          {% endfor %}
+
+      # ──────────────────────────────────────────────────────────────────
       # Calendar — every booking as an event
       # ──────────────────────────────────────────────────────────────────
       - type: calendar
