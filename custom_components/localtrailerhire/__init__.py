@@ -21,6 +21,7 @@ from .api import APIError, AuthenticationError, SharetribeFlexAPI
 from .auto_review import select_auto_reviews
 from .util import parse_iso_datetime
 from .const import (
+    CATEGORY_IN_PROGRESS,
     CATEGORY_UPCOMING,
     CONF_AUTO_REVIEW,
     CONF_AUTO_REVIEW_CONTENT,
@@ -43,6 +44,7 @@ from .const import (
     EVENT_MESSAGE_SENT,
     EVENT_REVIEW_LEFT,
     LOCALTRAILERHIRE_CLIENT_ID,
+    MAX_MESSAGE_SCAN,
     PROVIDER_REVIEW_TRANSITIONS,
     REQUEST_TRANSITIONS,
     SERVICE_ACCEPT_BOOKING,
@@ -638,6 +640,13 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self.reviews: list[dict[str, Any]] = []
         self.average_rating: float | None = None
 
+        # Provider profile + performance stats (current_user)
+        self.profile: dict[str, Any] = {}
+
+        # Message-scan results (awaiting reply on active bookings)
+        self.awaiting_reply_txns: list[str] = []
+        self.latest_message: dict[str, Any] | None = None
+
         # Diagnostics for debugging
         self.last_fetch_utc: str | None = None
         self.last_success_utc: str | None = None
@@ -686,12 +695,24 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             except (APIError, AuthenticationError) as err:
                 _LOGGER.warning("Failed to refresh own_listings: %s", err)
 
+            # Refresh provider profile (best-effort; also caches the user id)
+            try:
+                self.profile = await self.api.get_current_user()
+            except (APIError, AuthenticationError) as err:
+                _LOGGER.warning("Failed to refresh profile: %s", err)
+
             # Refresh reviews + aggregate rating (best-effort)
             try:
                 self.reviews = await self.api.get_reviews()
                 self.average_rating = self.api.average_rating(self.reviews)
             except (APIError, AuthenticationError) as err:
                 _LOGGER.warning("Failed to refresh reviews: %s", err)
+
+            # Scan active bookings for unanswered customer messages (best-effort)
+            try:
+                await self._refresh_awaiting_replies(bookings)
+            except Exception:  # noqa: BLE001 - never let the scan break the poll
+                _LOGGER.exception("Awaiting-reply scan failed")
 
             # Native auto-review pass (opt-in). Best-effort: a failure here must
             # never fail the data update.
@@ -1167,6 +1188,47 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         if state:
             return state.get("message_sent", False)
         return False
+
+    async def _refresh_awaiting_replies(
+        self, bookings: list[dict[str, Any]]
+    ) -> None:
+        """Flag active bookings whose latest message awaits a host reply.
+
+        Bounded to ``MAX_MESSAGE_SCAN`` active (upcoming/in_progress) bookings to
+        keep per-poll API calls in check. Updates ``awaiting_reply_txns`` and
+        ``latest_message`` (newest message across the scanned set).
+        """
+        provider_id = await self.api.get_current_user_id()
+        active = [
+            b
+            for b in bookings
+            if b.get("category") in (CATEGORY_UPCOMING, CATEGORY_IN_PROGRESS)
+            and b.get("transaction_id")
+        ][:MAX_MESSAGE_SCAN]
+
+        awaiting: list[str] = []
+        latest: dict[str, Any] | None = None
+        latest_ts = ""
+        for booking in active:
+            txn_id = booking["transaction_id"]
+            try:
+                messages = await self.api.get_messages(txn_id)
+            except (APIError, AuthenticationError) as err:
+                _LOGGER.debug("Message fetch failed for %s: %s", txn_id, err)
+                continue
+            if self.api.awaiting_reply(messages, provider_id):
+                awaiting.append(txn_id)
+            msg = self.api.latest_message(messages)
+            if msg and (msg.get("created_at") or "") > latest_ts:
+                latest_ts = msg.get("created_at") or ""
+                latest = {
+                    **msg,
+                    "transaction_id": txn_id,
+                    "listing_title": booking.get("listing_title"),
+                }
+
+        self.awaiting_reply_txns = awaiting
+        self.latest_message = latest
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Get diagnostic information for debugging."""

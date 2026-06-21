@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CURRENCY_DOLLAR
+from homeassistant.const import CURRENCY_DOLLAR, PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -42,7 +42,11 @@ from .const import (
     SENSOR_NEXT_END,
     SENSOR_NEXT_PAYOUT,
     SENSOR_NEXT_START,
+    SENSOR_ACCEPTANCE_RATE,
+    SENSOR_AWAITING_REPLIES,
+    SENSOR_PROFILE,
     SENSOR_RATING_AVERAGE,
+    SENSOR_RESPONSE_RATE,
     SENSOR_REVIEW_COUNT,
     SENSOR_TOTAL_COUNT,
     SENSOR_UNKNOWN_DATES_COUNT,
@@ -83,6 +87,11 @@ async def async_setup_entry(
         # Reviews
         RatingAverageSensor(coordinator, entry),
         ReviewCountSensor(coordinator, entry),
+        # Profile / performance / messages
+        ProfileSensor(coordinator, entry),
+        AcceptanceRateSensor(coordinator, entry),
+        ResponseRateSensor(coordinator, entry),
+        AwaitingRepliesSensor(coordinator, entry),
     ]
 
     # Per-listing entities (created from the initial listings snapshot)
@@ -252,6 +261,114 @@ class ReviewCountSensor(LocalTrailerHireBaseSensor):
     def available(self) -> bool:
         """Return True if entity is available."""
         return self.coordinator.last_update_success
+
+
+# =============================================================================
+# PROFILE / PERFORMANCE / MESSAGE SENSORS
+# =============================================================================
+
+
+class ProfileSensor(LocalTrailerHireBaseSensor):
+    """Provider profile (display name) + Stripe payout status."""
+
+    _attr_icon = "mdi:account-badge"
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, SENSOR_PROFILE, "Profile")
+
+    @property
+    def native_value(self) -> str | None:
+        return (self.coordinator.profile or {}).get("display_name")
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        profile = self.coordinator.profile or {}
+        return {
+            "payouts_enabled": profile.get("payouts_enabled"),
+            "charges_enabled": profile.get("charges_enabled"),
+            "stats": profile.get("stats", {}),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+        }
+
+
+class AcceptanceRateSensor(LocalTrailerHireBaseSensor):
+    """Booking acceptance rate (%) from the latest annual stats."""
+
+    _attr_icon = "mdi:check-decagram"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(
+            coordinator, entry, SENSOR_ACCEPTANCE_RATE, "Acceptance Rate"
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        return (self.coordinator.profile or {}).get("stats", {}).get("acceptance_rate")
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+
+class ResponseRateSensor(LocalTrailerHireBaseSensor):
+    """Response rate (%) from the latest annual stats."""
+
+    _attr_icon = "mdi:message-reply-text"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, SENSOR_RESPONSE_RATE, "Response Rate")
+
+    @property
+    def native_value(self) -> int | None:
+        return (self.coordinator.profile or {}).get("stats", {}).get("response_rate")
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+
+class AwaitingRepliesSensor(LocalTrailerHireBaseSensor):
+    """Active bookings whose latest message awaits a host reply."""
+
+    _attr_icon = "mdi:message-alert"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(
+            coordinator, entry, SENSOR_AWAITING_REPLIES, "Awaiting Replies"
+        )
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.awaiting_reply_txns)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "transaction_ids": self.coordinator.awaiting_reply_txns,
+            "latest_message": self.coordinator.latest_message,
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+        }
 
 
 # =============================================================================
@@ -1066,6 +1183,7 @@ class ListingStateSensor(_BaseListingSensor):
             "title": listing.get("title"),
             "deleted": listing.get("deleted"),
             "image_url": listing.get("image_url"),
+            "public_url": listing.get("public_url"),
             "listing_id": self._listing_id,
         }
 

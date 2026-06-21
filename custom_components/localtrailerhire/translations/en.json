@@ -121,6 +121,18 @@
       },
       "review_count": {
         "name": "Review Count"
+      },
+      "profile": {
+        "name": "Profile"
+      },
+      "acceptance_rate": {
+        "name": "Acceptance Rate"
+      },
+      "response_rate": {
+        "name": "Response Rate"
+      },
+      "awaiting_replies": {
+        "name": "Awaiting Replies"
       }
     }
   },

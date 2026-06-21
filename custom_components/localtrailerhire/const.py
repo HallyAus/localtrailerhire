@@ -92,6 +92,16 @@ SENSOR_BOOKINGS_TOTAL_PAYIN: Final = "bookings_total_payin_aud"
 SENSOR_RATING_AVERAGE: Final = "rating_average"
 SENSOR_REVIEW_COUNT: Final = "review_count"
 
+# Sensor names - Profile / performance / messages
+SENSOR_PROFILE: Final = "profile"
+SENSOR_ACCEPTANCE_RATE: Final = "acceptance_rate"
+SENSOR_RESPONSE_RATE: Final = "response_rate"
+SENSOR_AWAITING_REPLIES: Final = "awaiting_replies"
+
+# Cap on how many active bookings have their messages scanned per poll
+# (for the awaiting-reply sensor), to bound API calls.
+MAX_MESSAGE_SCAN: Final = 25
+
 # Booking categories
 CATEGORY_UPCOMING: Final = "upcoming"
 CATEGORY_IN_PROGRESS: Final = "in_progress"
