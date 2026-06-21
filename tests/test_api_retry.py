@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from lth_api import APIError, SharetribeFlexAPI
 
 
@@ -31,7 +30,7 @@ class _FakeResponse:
         if retry_after is not None:
             self.headers["Retry-After"] = retry_after
 
-    async def __aenter__(self) -> "_FakeResponse":
+    async def __aenter__(self) -> _FakeResponse:
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
@@ -73,9 +72,7 @@ async def test_request_retries_503_then_succeeds():
         ]
     )
     api = _make_api(session)
-    result, meta = await api._request_with_retry(
-        "GET", "http://x", headers={}, retry_auth=False
-    )
+    result, meta = await api._request_with_retry("GET", "http://x", headers={}, retry_auth=False)
     assert result == {"data": []}
     assert meta["status_code"] == 200
     assert session.request_count == 2
@@ -91,9 +88,7 @@ async def test_request_retries_5xx(status: int):
         ]
     )
     api = _make_api(session)
-    result, _meta = await api._request_with_retry(
-        "GET", "http://x", headers={}, retry_auth=False
-    )
+    result, _meta = await api._request_with_retry("GET", "http://x", headers={}, retry_auth=False)
     assert result == {"ok": True}
     assert session.request_count == 2
 
@@ -104,9 +99,7 @@ async def test_request_503_exhausts_budget_raises():
     session = _FakeSession([_FakeResponse(503, retry_after="0") for _ in range(10)])
     api = _make_api(session)
     with pytest.raises(APIError):
-        await api._request_with_retry(
-            "GET", "http://x", headers={}, retry_auth=False
-        )
+        await api._request_with_retry("GET", "http://x", headers={}, retry_auth=False)
     assert session.request_count == 4
 
 
