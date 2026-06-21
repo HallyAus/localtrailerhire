@@ -42,6 +42,8 @@ from .const import (
     SENSOR_NEXT_END,
     SENSOR_NEXT_PAYOUT,
     SENSOR_NEXT_START,
+    SENSOR_RATING_AVERAGE,
+    SENSOR_REVIEW_COUNT,
     SENSOR_TOTAL_COUNT,
     SENSOR_UNKNOWN_DATES_COUNT,
     SENSOR_UPCOMING_COUNT,
@@ -78,6 +80,9 @@ async def async_setup_entry(
         EarningsLast30DaysSensor(coordinator, entry),
         EarningsMonthToDateSensor(coordinator, entry),
         EarningsYearToDateSensor(coordinator, entry),
+        # Reviews
+        RatingAverageSensor(coordinator, entry),
+        ReviewCountSensor(coordinator, entry),
     ]
 
     # Per-listing entities (created from the initial listings snapshot)
@@ -165,6 +170,88 @@ class LocalTrailerHireBaseSensor(
         return self._entry.options.get(
             CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
         )
+
+    @property
+    def _public_reviews(self) -> list[dict[str, Any]]:
+        """Public, non-deleted reviews about the provider."""
+        return [
+            r
+            for r in self.coordinator.reviews
+            if r.get("type") == "ofProvider"
+            and r.get("state") == "public"
+            and not r.get("deleted")
+        ]
+
+
+# =============================================================================
+# REVIEW SENSORS
+# =============================================================================
+
+
+class RatingAverageSensor(LocalTrailerHireBaseSensor):
+    """Average star rating across public provider reviews."""
+
+    _attr_icon = "mdi:star"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_RATING_AVERAGE, "Rating")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the average rating (None when there are no reviews)."""
+        return self.coordinator.average_rating
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return review count and the most recent reviews."""
+        public = self._public_reviews
+        recent = sorted(
+            public, key=lambda r: r.get("created_at") or "", reverse=True
+        )[:5]
+        return {
+            "review_count": len(public),
+            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            "recent_reviews": [
+                {
+                    "rating": r.get("rating"),
+                    "content": r.get("content"),
+                    "created_at": r.get("created_at"),
+                }
+                for r in recent
+            ],
+        }
+
+
+class ReviewCountSensor(LocalTrailerHireBaseSensor):
+    """Count of public provider reviews."""
+
+    _attr_icon = "mdi:comment-text-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, SENSOR_REVIEW_COUNT, "Review Count")
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of public provider reviews."""
+        return len(self._public_reviews)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.last_update_success
 
 
 # =============================================================================

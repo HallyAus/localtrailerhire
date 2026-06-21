@@ -85,6 +85,10 @@ SENSOR_EARNINGS_EARNED: Final = "earnings_earned_aud"
 SENSOR_EARNINGS_SCHEDULED: Final = "earnings_scheduled_aud"
 SENSOR_BOOKINGS_TOTAL_PAYIN: Final = "bookings_total_payin_aud"
 
+# Sensor names - Reviews
+SENSOR_RATING_AVERAGE: Final = "rating_average"
+SENSOR_REVIEW_COUNT: Final = "review_count"
+
 # Booking categories
 CATEGORY_UPCOMING: Final = "upcoming"
 CATEGORY_IN_PROGRESS: Final = "in_progress"

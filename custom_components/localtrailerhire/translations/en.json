@@ -115,6 +115,12 @@
       },
       "bookings_total_payin_aud": {
         "name": "Bookings Total Payin"
+      },
+      "rating_average": {
+        "name": "Rating"
+      },
+      "review_count": {
+        "name": "Review Count"
       }
     }
   },
