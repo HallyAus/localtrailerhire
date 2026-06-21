@@ -158,11 +158,15 @@ DEFAULT_REVIEW_CONTENT: Final = (
 # Maximum pages to fetch (safety cap)
 MAX_PAGES: Final = 50
 
-# Rate-limit (HTTP 429) handling
-# Cap the number of automatic retries so a persistently rate-limited endpoint
+# Rate-limit (HTTP 429) and transient-5xx handling
+# Cap the number of automatic retries so a persistently failing endpoint
 # can't loop forever, and clamp the honoured Retry-After delay.
 MAX_RATE_LIMIT_RETRIES: Final = 3
 MAX_RETRY_AFTER_SECONDS: Final = 300
+
+# Statuses that are retried with backoff (honouring Retry-After). 429 is rate
+# limiting; 502/503/504 are transient Sharetribe maintenance/overload blips.
+RETRYABLE_STATUSES: Final = frozenset({429, 502, 503, 504})
 
 # Service names
 SERVICE_SEND_MESSAGE: Final = "send_message"

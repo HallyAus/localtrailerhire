@@ -20,6 +20,7 @@ from .const import (
     MAX_RETRY_AFTER_SECONDS,
     MESSAGE_SEND_URL,
     OWN_LISTINGS_URL,
+    RETRYABLE_STATUSES,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
     TRANSITION_URL,
@@ -143,8 +144,8 @@ class SharetribeFlexAPI:
                         method, url, retry_auth=False, **kwargs
                     )
 
-                if status_code == 429:
-                    # Rate limited, wait and retry (bounded number of attempts)
+                if status_code in RETRYABLE_STATUSES:
+                    # Rate limited (429) / transient 5xx: wait and retry (bounded)
                     if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                         _LOGGER.error(
                             "Rate limited and out of retries (%d) for url=%s",
@@ -620,7 +621,7 @@ class SharetribeFlexAPI:
                     )
 
                 # Handle rate limiting
-                if status_code == 429:
+                if status_code in RETRYABLE_STATUSES:
                     if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                         _LOGGER.error(
                             "Rate limited on message send and out of retries (%d)",
@@ -796,7 +797,7 @@ class SharetribeFlexAPI:
                         body=body, headers=headers, retry_auth=False
                     )
 
-                if status_code == 429:
+                if status_code in RETRYABLE_STATUSES:
                     if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                         _LOGGER.error(
                             "Rate limited on transition and out of retries (%d)",
