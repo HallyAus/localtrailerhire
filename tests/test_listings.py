@@ -26,7 +26,15 @@ def test_extract_listing_returns_simplified_dict():
         "deleted": False,
         "price_aud": 55.0,
         "image_url": "https://cdn/img1.jpg",
+        "public_url": "https://www.localtrailerhire.com.au/l/6x4-cage-trailer/list-1",
     }
+
+
+def test_listing_slug():
+    assert SharetribeFlexAPI._listing_slug("6x4 Cage Trailer") == "6x4-cage-trailer"
+    assert SharetribeFlexAPI._listing_slug("  Box/Trailer!! ") == "box-trailer"
+    assert SharetribeFlexAPI._listing_slug(None) == "trailer"
+    assert SharetribeFlexAPI._listing_slug("") == "trailer"
 
 
 def test_extract_listing_returns_none_without_id():

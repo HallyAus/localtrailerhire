@@ -12,6 +12,9 @@ DOMAIN: Final = "localtrailerhire"
 # so we hardcode it rather than asking each user to find it themselves.
 LOCALTRAILERHIRE_CLIENT_ID: Final = "ed212165-eae2-4fcc-8739-e057ca16d2df"
 
+# Public marketplace website — used to build listing "view on site" links.
+MARKETPLACE_WEB_URL: Final = "https://www.localtrailerhire.com.au"
+
 # API endpoints
 AUTH_TOKEN_URL: Final = "https://flex-api.sharetribe.com/v1/auth/token"
 TRANSACTIONS_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/query"

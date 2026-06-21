@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -16,6 +17,7 @@ from .const import (
     CURRENT_USER_URL,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_PER_PAGE,
+    MARKETPLACE_WEB_URL,
     MAX_PAGES,
     MAX_RATE_LIMIT_RETRIES,
     MAX_RETRY_AFTER_SECONDS,
@@ -1139,7 +1141,20 @@ class SharetribeFlexAPI:
             "deleted": attrs.get("deleted", False),
             "price_aud": cls._format_money(attrs.get("price")),
             "image_url": image_url,
+            "public_url": (
+                f"{MARKETPLACE_WEB_URL}/l/{cls._listing_slug(attrs.get('title'))}/{listing_id}"
+            ),
         }
+
+    @staticmethod
+    def _listing_slug(title: str | None) -> str:
+        """Slugify a listing title for the public ``/l/<slug>/<id>`` URL.
+
+        The slug is cosmetic on Sharetribe Web Template (the id resolves the
+        listing), so any title-derived slug works.
+        """
+        slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+        return slug or "trailer"
 
     def _process_transactions(
         self,
