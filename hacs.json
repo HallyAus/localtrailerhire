@@ -2,7 +2,5 @@
   "name": "Local Trailer Hire",
   "render_readme": true,
   "country": ["AU"],
-  "homeassistant": "2024.4.0",
-  "zip_release": true,
-  "filename": "localtrailerhire.zip"
+  "homeassistant": "2024.4.0"
 }
