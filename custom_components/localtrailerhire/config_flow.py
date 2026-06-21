@@ -70,7 +70,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     from .api import validate_credentials
 
                     session = async_get_clientsession(self.hass)
-                    success, new_refresh_token = await validate_credentials(
+                    success, new_refresh_token, error_code = await validate_credentials(
                         session=session,
                         client_id=self._client_id,
                         username=self._username,
@@ -96,7 +96,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                         return await self.async_step_options()
                     else:
-                        errors["base"] = "invalid_auth"
+                        errors["base"] = error_code or "invalid_auth"
 
                 except Exception as err:
                     _LOGGER.exception("Unexpected error during config: %s", err)
@@ -206,7 +206,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 from .api import validate_credentials
 
                 session = async_get_clientsession(self.hass)
-                success, new_refresh_token = await validate_credentials(
+                success, new_refresh_token, error_code = await validate_credentials(
                     session=session,
                     client_id=LOCALTRAILERHIRE_CLIENT_ID,
                     username=user_input.get(CONF_USERNAME),
@@ -233,7 +233,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         await self.hass.config_entries.async_reload(entry.entry_id)
                         return self.async_abort(reason="reauth_successful")
 
-                errors["base"] = "invalid_auth"
+                errors["base"] = error_code or "invalid_auth"
 
             except Exception as err:
                 _LOGGER.exception("Reauth error: %s", err)

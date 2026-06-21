@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -15,6 +16,8 @@ from .const import (
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_PER_PAGE,
     MAX_PAGES,
+    MAX_RATE_LIMIT_RETRIES,
+    MAX_RETRY_AFTER_SECONDS,
     MESSAGE_SEND_URL,
     OWN_LISTINGS_URL,
     TOKEN_REFRESH_BUFFER,
@@ -24,6 +27,29 @@ from .const import (
 from .util import parse_iso_datetime
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parse_retry_after(value: str | None, default: int = 60) -> int:
+    """Parse a ``Retry-After`` header value into a clamped delay in seconds.
+
+    The header may be either a number of seconds or an HTTP-date. Unparseable
+    values fall back to ``default``. The result is clamped to
+    ``MAX_RETRY_AFTER_SECONDS`` so a hostile/buggy header can't stall us.
+    """
+    seconds = default
+    if value:
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            try:
+                dt = parsedate_to_datetime(value)
+            except (TypeError, ValueError):
+                dt = None
+            if dt is not None:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                seconds = int((dt - datetime.now(timezone.utc)).total_seconds())
+    return max(0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
 class AuthenticationError(Exception):
@@ -82,6 +108,7 @@ class SharetribeFlexAPI:
         method: str,
         url: str,
         retry_auth: bool = True,
+        rate_limit_attempts: int = 0,
         **kwargs: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Make a request with automatic retry on 401.
@@ -117,12 +144,25 @@ class SharetribeFlexAPI:
                     )
 
                 if status_code == 429:
-                    # Rate limited, wait and retry
-                    retry_after = int(response.headers.get("Retry-After", 60))
+                    # Rate limited, wait and retry (bounded number of attempts)
+                    if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
+                        _LOGGER.error(
+                            "Rate limited and out of retries (%d) for url=%s",
+                            MAX_RATE_LIMIT_RETRIES,
+                            url,
+                        )
+                        raise APIError("Rate limited (exceeded retry budget)")
+                    retry_after = _parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
                     _LOGGER.warning("Rate limited, waiting %d seconds", retry_after)
                     await asyncio.sleep(retry_after)
                     return await self._request_with_retry(
-                        method, url, retry_auth=retry_auth, **kwargs
+                        method,
+                        url,
+                        retry_auth=retry_auth,
+                        rate_limit_attempts=rate_limit_attempts + 1,
+                        **kwargs,
                     )
 
                 if status_code >= 400:
@@ -216,7 +256,8 @@ class SharetribeFlexAPI:
                 self._process_token_response(result)
 
         except aiohttp.ClientError as err:
-            raise AuthenticationError(f"Network error during auth: {err}") from err
+            # Connectivity problem, not a credential problem.
+            raise APIError(f"Network error during auth: {type(err).__name__}") from err
 
     async def _do_refresh_token(self) -> None:
         """Refresh the access token using refresh token."""
@@ -257,7 +298,10 @@ class SharetribeFlexAPI:
                 self._process_token_response(result)
 
         except aiohttp.ClientError as err:
-            raise AuthenticationError(f"Network error during refresh: {err}") from err
+            # Connectivity problem, not a credential problem.
+            raise APIError(
+                f"Network error during refresh: {type(err).__name__}"
+            ) from err
 
     def _process_token_response(self, result: dict[str, Any]) -> None:
         """Process token response and store credentials."""
@@ -530,6 +574,7 @@ class SharetribeFlexAPI:
         headers: dict[str, str],
         payload: list,
         retry_auth: bool = True,
+        rate_limit_attempts: int = 0,
     ) -> dict[str, Any]:
         """Send message request with automatic retry on 401.
 
@@ -576,7 +621,15 @@ class SharetribeFlexAPI:
 
                 # Handle rate limiting
                 if status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
+                    if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
+                        _LOGGER.error(
+                            "Rate limited on message send and out of retries (%d)",
+                            MAX_RATE_LIMIT_RETRIES,
+                        )
+                        raise APIError("Rate limited (exceeded retry budget)")
+                    retry_after = _parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
                     _LOGGER.warning(
                         "Rate limited on message send, waiting %d seconds",
                         retry_after,
@@ -586,6 +639,7 @@ class SharetribeFlexAPI:
                         headers=headers,
                         payload=payload,
                         retry_auth=retry_auth,
+                        rate_limit_attempts=rate_limit_attempts + 1,
                     )
 
                 # Get response text for logging (sanitized)
@@ -725,6 +779,7 @@ class SharetribeFlexAPI:
         body: dict[str, Any],
         headers: dict[str, str],
         retry_auth: bool,
+        rate_limit_attempts: int = 0,
     ) -> dict[str, Any]:
         """POST to /transactions/transition with one 401 retry."""
         try:
@@ -742,13 +797,24 @@ class SharetribeFlexAPI:
                     )
 
                 if status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
+                    if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
+                        _LOGGER.error(
+                            "Rate limited on transition and out of retries (%d)",
+                            MAX_RATE_LIMIT_RETRIES,
+                        )
+                        raise APIError("Rate limited (exceeded retry budget)")
+                    retry_after = _parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
                     _LOGGER.warning(
                         "Rate limited on transition, waiting %ds", retry_after
                     )
                     await asyncio.sleep(retry_after)
                     return await self._post_transition_with_retry(
-                        body=body, headers=headers, retry_auth=retry_auth
+                        body=body,
+                        headers=headers,
+                        retry_auth=retry_auth,
+                        rate_limit_attempts=rate_limit_attempts + 1,
                     )
 
                 if status_code >= 400:
@@ -1302,8 +1368,13 @@ async def validate_credentials(
     username: str | None = None,
     password: str | None = None,
     refresh_token: str | None = None,
-) -> tuple[bool, str | None]:
-    """Validate credentials and return (success, refresh_token)."""
+) -> tuple[bool, str | None, str | None]:
+    """Validate credentials.
+
+    Returns ``(success, refresh_token, error_code)`` where ``error_code`` is
+    ``None`` on success, ``"invalid_auth"`` for rejected credentials, or
+    ``"cannot_connect"`` for a connectivity/network failure.
+    """
     api = SharetribeFlexAPI(
         session=session,
         client_id=client_id,
@@ -1314,7 +1385,10 @@ async def validate_credentials(
 
     try:
         await api.authenticate()
-        return True, api.refresh_token
+        return True, api.refresh_token, None
     except AuthenticationError as err:
-        _LOGGER.error("Credential validation failed: %s", err)
-        return False, None
+        _LOGGER.error("Credential validation failed (invalid auth): %s", err)
+        return False, None, "invalid_auth"
+    except APIError as err:
+        _LOGGER.error("Credential validation failed (cannot connect): %s", err)
+        return False, None, "cannot_connect"
