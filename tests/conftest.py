@@ -39,6 +39,11 @@ sys.modules["lth_pkg.const"] = _load("lth_pkg.const", COMPONENT / "const.py")
 
 api = _load("lth_pkg.api", COMPONENT / "api.py")
 
+# auto_review.py imports only ``.util`` (registered above), so it loads without
+# Home Assistant just like api.py.
+auto_review = _load("lth_pkg.auto_review", COMPONENT / "auto_review.py")
+
 # Re-export under the names the tests use.
 sys.modules["lth_util"] = util
 sys.modules["lth_api"] = api
+sys.modules["lth_auto_review"] = auto_review
