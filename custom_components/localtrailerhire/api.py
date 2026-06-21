@@ -899,15 +899,13 @@ class SharetribeFlexAPI:
         _LOGGER.debug("Fetched %d own listings", len(listings))
         return listings
 
-    async def get_current_user_id(self) -> str | None:
-        """Return the authenticated provider's user id (cached after first call).
+    async def get_current_user(self) -> dict[str, Any]:
+        """Fetch the authenticated provider's profile + performance stats.
 
-        Queries ``current_user/show`` once and caches the UUID, which is needed
-        as the ``subjectId`` when querying reviews about this provider.
+        Returns ``{id, display_name, payouts_enabled, charges_enabled, stats}``
+        where ``stats`` is the latest annual ``bookingStats``. Caches the user id
+        (used as the reviews ``subjectId``) as a side effect.
         """
-        if self._current_user_id:
-            return self._current_user_id
-
         await self._ensure_valid_token()
         if not self._access_token:
             raise AuthenticationError("No access token available")
@@ -919,8 +917,55 @@ class SharetribeFlexAPI:
         result, _meta = await self._request_with_retry(
             "GET", CURRENT_USER_URL, headers=headers
         )
-        self._current_user_id = self._extract_uuid(result.get("data", {}).get("id"))
+        parsed = self.parse_current_user(result)
+        if parsed.get("id"):
+            self._current_user_id = parsed["id"]
+        return parsed
+
+    async def get_current_user_id(self) -> str | None:
+        """Return the provider user id (cached after the first fetch)."""
+        if self._current_user_id:
+            return self._current_user_id
+        await self.get_current_user()
         return self._current_user_id
+
+    @staticmethod
+    def parse_current_user(payload: dict[str, Any]) -> dict[str, Any]:
+        """Parse ``current_user/show`` into a simplified profile + stats dict.
+
+        ``stats`` is taken from the most recent *annual* ``bookingStats-<YYYY>``
+        entry in ``profile.privateData`` (monthly ``-<YYYY-MM>`` buckets ignored).
+        """
+        data = payload.get("data", {}) or {}
+        attrs = data.get("attributes", {}) or {}
+        profile = attrs.get("profile", {}) or {}
+        private = profile.get("privateData", {}) or {}
+
+        annual = {
+            k: v
+            for k, v in private.items()
+            if re.fullmatch(r"bookingStats-\d{4}", k) and isinstance(v, dict)
+        }
+        stats: dict[str, Any] = {}
+        if annual:
+            year_key = max(annual)  # "bookingStats-YYYY" sorts correctly as text
+            s = annual[year_key]
+            stats = {
+                "year": year_key.replace("bookingStats-", ""),
+                "acceptance_rate": s.get("acceptanceRate"),
+                "response_rate": s.get("responseRate"),
+                "num_bookings": s.get("numBookings"),
+                "num_hires": s.get("numHires"),
+                "missed_earnings": s.get("missedEarnings"),
+            }
+
+        return {
+            "id": SharetribeFlexAPI._extract_uuid(data.get("id")),
+            "display_name": profile.get("displayName"),
+            "payouts_enabled": attrs.get("stripePayoutsEnabled"),
+            "charges_enabled": attrs.get("stripeChargesEnabled"),
+            "stats": stats,
+        }
 
     async def get_reviews(self) -> list[dict[str, Any]]:
         """Fetch reviews left about the authenticated provider.
