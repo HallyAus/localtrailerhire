@@ -17,6 +17,8 @@ AUTH_TOKEN_URL: Final = "https://flex-api.sharetribe.com/v1/auth/token"
 TRANSACTIONS_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/query"
 TRANSITION_URL: Final = "https://flex-api.sharetribe.com/v1/api/transactions/transition"
 OWN_LISTINGS_URL: Final = "https://flex-api.sharetribe.com/v1/api/own_listings/query"
+REVIEWS_URL: Final = "https://flex-api.sharetribe.com/v1/api/reviews/query"
+CURRENT_USER_URL: Final = "https://flex-api.sharetribe.com/v1/api/current_user/show"
 
 # Default configuration
 DEFAULT_SCAN_INTERVAL: Final = 10  # minutes

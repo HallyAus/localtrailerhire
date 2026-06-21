@@ -13,6 +13,7 @@ import aiohttp
 
 from .const import (
     AUTH_TOKEN_URL,
+    CURRENT_USER_URL,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_PER_PAGE,
     MAX_PAGES,
@@ -21,6 +22,7 @@ from .const import (
     MESSAGE_SEND_URL,
     OWN_LISTINGS_URL,
     RETRYABLE_STATUSES,
+    REVIEWS_URL,
     TOKEN_REFRESH_BUFFER,
     TRANSACTIONS_URL,
     TRANSITION_URL,
@@ -81,6 +83,8 @@ class SharetribeFlexAPI:
         self._access_token: str | None = None
         self._token_expiry: datetime | None = None
         self._lock = asyncio.Lock()
+        # Cached provider user id (from current_user/show); used to query reviews.
+        self._current_user_id: str | None = None
         # Diagnostics data for debugging
         self._last_diagnostics: dict[str, Any] = {}
 
@@ -891,6 +895,108 @@ class SharetribeFlexAPI:
 
         _LOGGER.debug("Fetched %d own listings", len(listings))
         return listings
+
+    async def get_current_user_id(self) -> str | None:
+        """Return the authenticated provider's user id (cached after first call).
+
+        Queries ``current_user/show`` once and caches the UUID, which is needed
+        as the ``subjectId`` when querying reviews about this provider.
+        """
+        if self._current_user_id:
+            return self._current_user_id
+
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        result, _meta = await self._request_with_retry(
+            "GET", CURRENT_USER_URL, headers=headers
+        )
+        self._current_user_id = self._extract_uuid(result.get("data", {}).get("id"))
+        return self._current_user_id
+
+    async def get_reviews(self) -> list[dict[str, Any]]:
+        """Fetch reviews left about the authenticated provider.
+
+        Queries ``reviews/query?subjectId=<provider id>`` and returns simplified
+        dicts ``{rating, content, type, state, created_at, deleted}``. Reviews
+        about a provider have ``type == "ofProvider"`` and ``state == "public"``
+        (verified against the live API).
+        """
+        user_id = await self.get_current_user_id()
+        if not user_id:
+            _LOGGER.warning("Cannot fetch reviews without a provider user id")
+            return []
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+
+        reviews: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params = {
+                "subjectId": user_id,
+                "per_page": str(DEFAULT_PER_PAGE),
+                "page": str(page),
+            }
+            result, _meta = await self._request_with_retry(
+                "GET", REVIEWS_URL, headers=headers, params=params
+            )
+            data = result.get("data", [])
+            reviews.extend(self.parse_reviews(result))
+
+            if len(data) < DEFAULT_PER_PAGE:
+                break
+            if page >= MAX_PAGES:
+                _LOGGER.warning("Hit MAX_PAGES while fetching reviews")
+                break
+            page += 1
+
+        _LOGGER.debug("Fetched %d reviews", len(reviews))
+        return reviews
+
+    @staticmethod
+    def parse_reviews(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract simplified review dicts from a reviews/query JSON-API payload."""
+        parsed: list[dict[str, Any]] = []
+        for item in payload.get("data", []):
+            attrs = item.get("attributes", {}) or {}
+            parsed.append(
+                {
+                    "rating": attrs.get("rating"),
+                    "content": attrs.get("content"),
+                    "type": attrs.get("type"),
+                    "state": attrs.get("state"),
+                    "created_at": attrs.get("createdAt"),
+                    "deleted": attrs.get("deleted", False),
+                }
+            )
+        return parsed
+
+    @staticmethod
+    def average_rating(reviews: list[dict[str, Any]]) -> float | None:
+        """Mean rating across public, non-deleted provider reviews.
+
+        Returns ``None`` when there are no qualifying reviews. Rounded to one
+        decimal place.
+        """
+        ratings = [
+            r["rating"]
+            for r in reviews
+            if r.get("type") == "ofProvider"
+            and r.get("state") == "public"
+            and not r.get("deleted")
+            and isinstance(r.get("rating"), (int, float))
+        ]
+        if not ratings:
+            return None
+        return round(sum(ratings) / len(ratings), 1)
 
     @classmethod
     def _build_images_map(
