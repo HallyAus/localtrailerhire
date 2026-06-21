@@ -119,8 +119,9 @@ ATTR_BOOKING_COUNT: Final = "booking_count"
 ATTR_LAST_UPDATE: Final = "last_update"
 ATTR_BREAKDOWN: Final = "breakdown"
 
-# Message API endpoint
+# Message API endpoints
 MESSAGE_SEND_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/send"
+MESSAGES_QUERY_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/query"
 
 # Transitions that indicate a confirmed booking
 # These are the transitions where a booking has been confirmed/accepted

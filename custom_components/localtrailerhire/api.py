@@ -20,6 +20,7 @@ from .const import (
     MAX_RATE_LIMIT_RETRIES,
     MAX_RETRY_AFTER_SECONDS,
     MESSAGE_SEND_URL,
+    MESSAGES_QUERY_URL,
     OWN_LISTINGS_URL,
     RETRYABLE_STATUSES,
     REVIEWS_URL,
@@ -997,6 +998,89 @@ class SharetribeFlexAPI:
         if not ratings:
             return None
         return round(sum(ratings) / len(ratings), 1)
+
+    async def get_messages(self, transaction_id: str) -> list[dict[str, Any]]:
+        """Fetch messages for a transaction, including each message's sender.
+
+        Returns simplified dicts ``{content, created_at, sender_id, deleted}``
+        (verified shape: ``messages/query?transactionId&include=sender``).
+        """
+        if not transaction_id:
+            raise APIError("transaction_id is required")
+
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+
+        messages: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params = {
+                "transactionId": transaction_id,
+                "include": "sender",
+                "per_page": str(DEFAULT_PER_PAGE),
+                "page": str(page),
+            }
+            result, _meta = await self._request_with_retry(
+                "GET", MESSAGES_QUERY_URL, headers=headers, params=params
+            )
+            data = result.get("data", [])
+            messages.extend(self.parse_messages(result))
+
+            if len(data) < DEFAULT_PER_PAGE:
+                break
+            if page >= MAX_PAGES:
+                _LOGGER.warning("Hit MAX_PAGES while fetching messages")
+                break
+            page += 1
+
+        return messages
+
+    @classmethod
+    def parse_messages(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract simplified message dicts from a messages/query payload."""
+        parsed: list[dict[str, Any]] = []
+        for item in payload.get("data", []):
+            attrs = item.get("attributes", {}) or {}
+            relationships = item.get("relationships", {}) or {}
+            parsed.append(
+                {
+                    "content": attrs.get("content"),
+                    "created_at": attrs.get("createdAt"),
+                    "deleted": attrs.get("deleted", False),
+                    "sender_id": cls._related_id(relationships, "sender"),
+                }
+            )
+        return parsed
+
+    @staticmethod
+    def latest_message(
+        messages: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Return the most recent non-deleted message (by created_at)."""
+        live = [m for m in messages if not m.get("deleted")]
+        if not live:
+            return None
+        return max(live, key=lambda m: m.get("created_at") or "")
+
+    @classmethod
+    def awaiting_reply(
+        cls, messages: list[dict[str, Any]], provider_id: str | None
+    ) -> bool:
+        """True if the latest non-deleted message was sent by someone other than
+        the provider (i.e. the host has not replied yet).
+
+        Approximation — the Marketplace API has no per-message read flag.
+        """
+        latest = cls.latest_message(messages)
+        if latest is None or not provider_id:
+            return False
+        return latest.get("sender_id") != provider_id
 
     @classmethod
     def _build_images_map(
