@@ -157,6 +157,26 @@ DEFAULT_REVIEW_CONTENT: Final = (
     "and in great condition. Welcome back any time!"
 )
 
+# Native auto-review (opt-in). When enabled, the coordinator attempts a provider
+# review on each past booking that hasn't been reviewed yet, persisting state so
+# it survives restarts (unlike the old delay-based example automation).
+CONF_AUTO_REVIEW: Final = "auto_review"
+DEFAULT_AUTO_REVIEW: Final = False
+CONF_AUTO_REVIEW_RATING: Final = "auto_review_rating"
+CONF_AUTO_REVIEW_CONTENT: Final = "auto_review_content"
+
+# Transitions meaning the provider review is already done or its window has
+# closed; auto-review must skip these. Verified against the live marketplace
+# process (e.g. expire-provider-review-period appears on bookings whose review
+# window lapsed unreviewed).
+PROVIDER_REVIEW_DONE_TRANSITIONS: Final = frozenset(
+    {
+        "transition/review-1-by-provider",
+        "transition/review-2-by-provider",
+        "transition/expire-provider-review-period",
+    }
+)
+
 # Maximum pages to fetch (safety cap)
 MAX_PAGES: Final = 50
 

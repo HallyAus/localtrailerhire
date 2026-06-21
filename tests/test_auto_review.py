@@ -46,6 +46,18 @@ def test_not_reviewable_missing_end():
     assert is_reviewable(booking, NOW) is False
 
 
+def test_not_reviewable_when_provider_already_reviewed():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/review-2-by-provider"
+    assert is_reviewable(booking, NOW) is False
+
+
+def test_not_reviewable_when_review_window_expired():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/expire-provider-review-period"
+    assert is_reviewable(booking, NOW) is False
+
+
 # --- select_auto_reviews -----------------------------------------------------
 
 

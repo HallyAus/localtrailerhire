@@ -14,15 +14,21 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_AUTO_REVIEW,
+    CONF_AUTO_REVIEW_CONTENT,
+    CONF_AUTO_REVIEW_RATING,
     CONF_CLIENT_ID,
     CONF_INCLUDE_BOOKING_LISTS,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    DEFAULT_AUTO_REVIEW,
     DEFAULT_INCLUDE_BOOKING_LISTS,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
+    DEFAULT_REVIEW_CONTENT,
+    DEFAULT_REVIEW_RATING,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     LOCALTRAILERHIRE_CLIENT_ID,
@@ -321,6 +327,24 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
         if not isinstance(current_booking_lists, bool):
             current_booking_lists = DEFAULT_INCLUDE_BOOKING_LISTS
 
+        current_auto_review = options.get(CONF_AUTO_REVIEW, DEFAULT_AUTO_REVIEW)
+        if not isinstance(current_auto_review, bool):
+            current_auto_review = DEFAULT_AUTO_REVIEW
+
+        current_auto_review_rating = options.get(
+            CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING
+        )
+        try:
+            current_auto_review_rating = int(current_auto_review_rating)
+        except (ValueError, TypeError):
+            current_auto_review_rating = DEFAULT_REVIEW_RATING
+
+        current_auto_review_content = options.get(
+            CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT
+        )
+        if not isinstance(current_auto_review_content, str):
+            current_auto_review_content = DEFAULT_REVIEW_CONTENT
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -340,6 +364,15 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_INCLUDE_BOOKING_LISTS, default=current_booking_lists
                     ): bool,
+                    vol.Optional(
+                        CONF_AUTO_REVIEW, default=current_auto_review
+                    ): bool,
+                    vol.Optional(
+                        CONF_AUTO_REVIEW_RATING, default=current_auto_review_rating
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
+                    vol.Optional(
+                        CONF_AUTO_REVIEW_CONTENT, default=current_auto_review_content
+                    ): str,
                 }
             ),
         )

@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from .const import PROVIDER_REVIEW_DONE_TRANSITIONS
 from .util import parse_iso_datetime
 
 # Bounded attempt window after a booking ends: wide enough for Sharetribe to
@@ -46,6 +47,10 @@ def is_reviewable(
     actually be posted is decided by the API when the attempt is made.
     """
     if booking.get("category") != "past":
+        return False
+    # Skip bookings the provider has already reviewed or whose review window has
+    # lapsed — attempting those just wastes API calls.
+    if booking.get("last_transition") in PROVIDER_REVIEW_DONE_TRANSITIONS:
         return False
     end = parse_iso_datetime(booking.get("booking_end"))
     if end is None:

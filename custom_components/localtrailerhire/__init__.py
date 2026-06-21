@@ -18,15 +18,20 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import APIError, AuthenticationError, SharetribeFlexAPI
+from .auto_review import select_auto_reviews
 from .util import parse_iso_datetime
 from .const import (
     CATEGORY_UPCOMING,
+    CONF_AUTO_REVIEW,
+    CONF_AUTO_REVIEW_CONTENT,
+    CONF_AUTO_REVIEW_RATING,
     CONF_CLIENT_ID,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONFIRMED_TRANSITIONS,
+    DEFAULT_AUTO_REVIEW,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_REVIEW_CONTENT,
@@ -227,6 +232,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     last_transitions = [t.strip() for t in transitions_str.split(",") if t.strip()]
     include_sensitive = entry.options.get(CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE)
+    auto_review = entry.options.get(CONF_AUTO_REVIEW, DEFAULT_AUTO_REVIEW)
+    auto_review_rating = entry.options.get(CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING)
+    auto_review_content = entry.options.get(
+        CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT
+    )
 
     # Create API client
     session = async_get_clientsession(hass)
@@ -262,6 +272,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(minutes=scan_interval),
         store=store,
         stored_data=stored_data,
+        auto_review=auto_review,
+        auto_review_rating=auto_review_rating,
+        auto_review_content=auto_review_content,
     )
 
     # Fetch initial data
@@ -593,6 +606,9 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         update_interval: timedelta,
         store: Store,
         stored_data: dict[str, Any],
+        auto_review: bool = False,
+        auto_review_rating: int = DEFAULT_REVIEW_RATING,
+        auto_review_content: str = DEFAULT_REVIEW_CONTENT,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -605,6 +621,9 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self.entry = entry
         self.last_transitions = last_transitions
         self.include_sensitive = include_sensitive
+        self.auto_review = auto_review
+        self.auto_review_rating = auto_review_rating
+        self.auto_review_content = auto_review_content
         self._store = store
         self._stored_data = stored_data
 
@@ -614,6 +633,10 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         # Listings cache (refreshed each update)
         self.listings: list[dict[str, Any]] = []
+
+        # Reviews cache (refreshed each update) + aggregate rating
+        self.reviews: list[dict[str, Any]] = []
+        self.average_rating: float | None = None
 
         # Diagnostics for debugging
         self.last_fetch_utc: str | None = None
@@ -662,6 +685,21 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 self.listings = await self.api.get_own_listings()
             except (APIError, AuthenticationError) as err:
                 _LOGGER.warning("Failed to refresh own_listings: %s", err)
+
+            # Refresh reviews + aggregate rating (best-effort)
+            try:
+                self.reviews = await self.api.get_reviews()
+                self.average_rating = self.api.average_rating(self.reviews)
+            except (APIError, AuthenticationError) as err:
+                _LOGGER.warning("Failed to refresh reviews: %s", err)
+
+            # Native auto-review pass (opt-in). Best-effort: a failure here must
+            # never fail the data update.
+            if self.auto_review:
+                try:
+                    await self._run_auto_review(bookings, now)
+                except Exception:  # noqa: BLE001 - never let auto-review break the poll
+                    _LOGGER.exception("Auto-review pass failed")
 
             # Find newest transaction by last_transitioned_at
             newest_txn = self._find_newest_transaction(bookings)
@@ -1056,6 +1094,71 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self._stored_data["transaction_states"] = transaction_states
         await self._store.async_save(self._stored_data)
         _LOGGER.debug("Marked message_sent=True for transaction %s", transaction_id)
+
+    async def _run_auto_review(
+        self, bookings: list[dict[str, Any]], now: datetime
+    ) -> None:
+        """Attempt provider reviews on eligible past bookings (opt-in).
+
+        Selection is pure (see ``auto_review.select_auto_reviews``). For each
+        selected transaction we attempt ``leave_review`` and let the API decide
+        whether the review window is open: success is recorded in the store so it
+        never re-posts, and failures are counted for a bounded retry on later
+        polls. State persistence is what makes this survive restarts.
+        """
+        transaction_states = self._stored_data.get("transaction_states", {})
+        to_review = select_auto_reviews(
+            bookings,
+            transaction_states,
+            enabled=self.auto_review,
+            now=now,
+        )
+        if not to_review:
+            return
+
+        changed = False
+        for txn_id in to_review:
+            state = transaction_states.setdefault(txn_id, {})
+            try:
+                result = await self.api.leave_review(
+                    txn_id,
+                    rating=self.auto_review_rating,
+                    content=self.auto_review_content,
+                )
+            except (APIError, AuthenticationError) as err:
+                # Window likely not open yet (or transient). Count the attempt
+                # and retry on a later poll until it succeeds or ages out.
+                state["auto_review_attempts"] = state.get("auto_review_attempts", 0) + 1
+                changed = True
+                _LOGGER.debug(
+                    "Auto-review attempt %d failed for %s: %s",
+                    state["auto_review_attempts"],
+                    txn_id,
+                    err,
+                )
+                continue
+
+            state["auto_reviewed"] = True
+            state["auto_reviewed_at"] = now.isoformat()
+            state["auto_review_transition"] = result.get("transition")
+            changed = True
+            self.hass.bus.async_fire(
+                EVENT_REVIEW_LEFT,
+                {
+                    "transaction_id": txn_id,
+                    "transition": result.get("transition"),
+                    "rating": self.auto_review_rating,
+                    "auto": True,
+                    "timestamp": now.isoformat(),
+                },
+            )
+            _LOGGER.info(
+                "Auto-review posted for %s (%s)", txn_id, result.get("transition")
+            )
+
+        if changed:
+            self._stored_data["transaction_states"] = transaction_states
+            await self._store.async_save(self._stored_data)
 
     def has_message_been_sent(self, transaction_id: str) -> bool:
         """Check if a message has already been sent for a transaction."""
