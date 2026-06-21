@@ -1,5 +1,12 @@
 # Local Trailer Hire — auto-leave 5-star review automation
 #
+# NOTE (v1.3.0+): The integration now has a NATIVE auto-review option —
+# Settings → Devices & Services → Local Trailer Hire → Configure →
+# "Auto-leave a review after each booking". The native option is poll-driven
+# and persists state, so it survives Home Assistant restarts (this automation's
+# single `delay` does NOT — a restart mid-wait silently drops the review).
+# Prefer the native option; this example is kept only for advanced/custom needs.
+#
 # Drop this into your Home Assistant `automations.yaml` (or paste it via
 # Settings → Automations & Scenes → Create automation → three-dots → Edit
 # in YAML).
