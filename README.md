@@ -40,12 +40,16 @@ Storing your trailers somewhere rural or running HA off a remote shed? Starlink 
 - **Booking Count Sensors**: Separate sensors for upcoming, in-progress, pending requests, unknown dates, and total bookings
 - **Next Booking Sensors**: Start time, end time, customer name, and payout for the next upcoming booking
 - **Earnings Sensors**: Total, earned, scheduled, MTD, YTD, and last-30-day payouts
+- **Reputation Sensors** *(v1.3.0)*: Your average **Rating** and **Review Count** from customer reviews
+- **Performance Sensors** *(v1.4.0)*: **Acceptance Rate**, **Response Rate**, and a **Profile** sensor (display name + payouts-enabled), from your booking stats
+- **Message Reading** *(v1.4.0)*: **Awaiting Replies** sensor flags active bookings whose latest message is from the customer (you can now *see* replies, not just send them)
+- **Native Auto-Review** *(v1.3.0, opt-in)*: Automatically posts a provider review once a booking becomes reviewable — durable across restarts, never double-posts
 - **Calendar Entity**: Native Home Assistant calendar exposing every booking as an event
-- **Per-Listing Devices**: Each of your trailer listings becomes its own HA device with state, daily price, and active-booking count
+- **Per-Listing Devices**: Each of your trailer listings becomes its own HA device with state, daily price, active-booking count, and a "view on site" link
 - **Pending Action Binary Sensor**: Lights up when one or more booking requests need accept/decline
 - **Accept / Decline Services**: Approve or reject booking requests directly from automations
-- **Send Message Service**: Send messages to customers through the marketplace
-- **Booking Lifecycle Events**: Fires `booking_request_received` and `booking_confirmed` events
+- **Send Message & Leave Review Services**: Message customers and post reviews through the marketplace
+- **Booking Lifecycle Events**: Fires `booking_request_received`, `booking_confirmed`, `message_sent`, and `review_left` events
 - **Automatic Token Refresh**: Handles OAuth2 token refresh automatically
 - **Configurable Update Interval**: Set how often to fetch new data (default: 10 minutes)
 - **Privacy Controls**: Option to mask sensitive customer data
@@ -125,6 +129,9 @@ password is the easiest path.
 - **Transaction Transitions**: Leave empty to fetch all transactions (recommended)
 - **Include Sensitive Data**: Show full driver licence and unmasked phone numbers
 - **Include Booking Lists**: Include full booking lists in sensor attributes (can be disabled to reduce state size)
+- **Auto-leave a review after each booking** *(v1.3.0)*: When enabled, automatically posts a provider review once a past booking becomes reviewable. **Off by default.** See [Auto-Review](#auto-review) below.
+- **Auto-review rating** *(v1.3.0)*: Star rating to post automatically (default: 5)
+- **Auto-review text** *(v1.3.0)*: The review text to post automatically
 
 ## Sensors
 
@@ -233,6 +240,57 @@ Payout from upcoming and in-progress bookings (in AUD).
 #### `sensor.local_trailer_hire_bookings_total_payin`
 
 Total customer payments (payin) across all transactions (in AUD).
+
+### Reputation Sensors *(v1.3.0)*
+
+#### `sensor.local_trailer_hire_rating`
+
+Your average star rating across public customer reviews of you as a provider.
+`unknown` until you have at least one review.
+
+**Attributes:**
+- `review_count`: Number of public reviews
+- `recent_reviews`: The 5 most recent reviews (`rating`, `content`, `created_at`)
+- `last_update`: Timestamp of last data refresh
+
+#### `sensor.local_trailer_hire_review_count`
+
+Number of public customer reviews of you as a provider.
+
+### Performance & Profile Sensors *(v1.4.0)*
+
+Sourced from your marketplace booking stats (latest full year).
+
+#### `sensor.local_trailer_hire_acceptance_rate`
+
+Your booking acceptance rate as a percentage.
+
+#### `sensor.local_trailer_hire_response_rate`
+
+Your message response rate as a percentage.
+
+#### `sensor.local_trailer_hire_profile`
+
+Your provider display name.
+
+**Attributes:**
+- `payouts_enabled` / `charges_enabled`: Stripe payout/charge status
+- `stats`: Latest-year stats (acceptance rate, response rate, bookings, hires, missed earnings)
+- `last_update`: Timestamp of last data refresh
+
+### Message Sensor *(v1.4.0)*
+
+#### `sensor.local_trailer_hire_awaiting_replies`
+
+Count of **active** bookings (upcoming/in-progress) whose most recent message
+came from the customer — i.e. you haven't replied yet. To keep API calls
+bounded, up to 25 active bookings are scanned per refresh. (Approximation — the
+marketplace API has no per-message "read" flag.)
+
+**Attributes:**
+- `transaction_ids`: The transactions awaiting your reply
+- `latest_message`: The newest message across the scanned bookings (`content`, `sender_id`, `transaction_id`, `listing_title`)
+- `last_update`: Timestamp of last data refresh
 
 ## Calendar
 
@@ -460,37 +518,32 @@ because the customer has already reviewed).
   `transition/review-2-by-provider`. Leave empty for auto-select.
 - `config_entry_id` (optional): Target a specific config entry
 
-Fires the `localtrailerhire_review_left` event on success.
+Fires the `localtrailerhire_review_left` event on success. Use this service for
+manual or one-off reviews. For hands-off reviews, use the built-in
+**[Auto-Review](#auto-review)** option instead of a `delay`-based automation.
 
-**Example: auto-leave a 5-star review 2 hours after the booking ends**
+## Auto-Review
 
-```yaml
-automation:
-  - alias: "LocalTrailerHire auto 5-star review"
-    description: "Leave a 5-star review 2 hours after pickup window ends"
-    trigger:
-      - platform: state
-        entity_id: sensor.local_trailer_hire_next_booking_end
-    action:
-      - delay:
-          hours: 2
-      - service: localtrailerhire.leave_review
-        data:
-          transaction_id: "{{ state_attr('sensor.local_trailer_hire_next_booking_start', 'transaction_id') }}"
-          rating: 5
-          review_content: >-
-            Thanks for hiring with us — easy communication and the trailer
-            came back in great shape. Welcome back any time!
-```
+*(v1.3.0)* The integration can post a provider review for you automatically —
+reliably, with no automation YAML.
 
-For a more reliable trigger, drive it from the
-`localtrailerhire_booking_confirmed` event with a delay until the booking
-end date — that gives you the transaction id directly in `trigger.event.data`.
+**Enable it:** Settings → Devices & Services → **Local Trailer Hire** →
+**Configure** → tick **"Auto-leave a review after each booking"** (set the
+rating and text there too). It is **off by default**.
 
-A complete production-ready automation is included at
-[`examples/auto_review.yaml`](examples/auto_review.yaml). It triggers on
-every confirmed booking, waits until `booking_end + 4 hours`, then posts a
-5-star review using the customer's first name and listing title.
+**How it works:** on each refresh the integration finds past bookings that are
+now reviewable and not yet reviewed, posts the review (trying
+`review-1-by-provider`, falling back to `review-2-by-provider`), and records it
+so it never posts twice. Because that state is persisted, it **survives Home
+Assistant restarts** — unlike a `delay`-based automation, which silently drops
+the pending review if HA restarts during the (often multi-day) wait between
+confirmation and the booking ending. Bookings whose review window has already
+closed are skipped. Each auto-review fires `localtrailerhire_review_left` (with
+`"auto": true`).
+
+> The older example automation at
+> [`examples/auto_review.yaml`](examples/auto_review.yaml) still works but is
+> **superseded** by this option — keep it only for custom needs.
 
 ## Example automations
 
@@ -499,7 +552,7 @@ Two ready-to-paste automations live in [`examples/`](examples/):
 | File | What it does |
 |---|---|
 | [`auto_message.yaml`](examples/auto_message.yaml) | Sends a welcome message the moment a booking is confirmed |
-| [`auto_review.yaml`](examples/auto_review.yaml) | Auto-posts a 5★ review 4 hours after the booking ends |
+| [`auto_review.yaml`](examples/auto_review.yaml) | Auto-posts a 5★ review (legacy — superseded by the built-in [Auto-Review](#auto-review) option) |
 
 See [`examples/README.md`](examples/README.md) for details and personalisation tips.
 
@@ -570,8 +623,10 @@ service.
 
 A ready-to-use Lovelace dashboard is included at
 [`dashboards/local_trailer_hire.yaml`](dashboards/local_trailer_hire.yaml). It
-shows the calendar, top-line stats, earnings by period, a pending-action
-banner with quick accept/decline buttons, and a per-listing view.
+shows the calendar, top-line stats, earnings by period, a reputation &
+messages section (rating, reviews, acceptance/response rate, awaiting-reply
+banner), a pending-action banner with quick accept/decline buttons, and a
+per-listing view.
 
 To use it:
 1. Settings → Dashboards → **Add Dashboard** → New dashboard from scratch
@@ -585,6 +640,7 @@ Each of your trailers (`own_listings`) becomes its own Home Assistant device,
 linked to the integration as a child device. Per-listing entities:
 
 - `sensor.<title>_state` — `published`, `closed`, `draft`, or `pendingApproval`
+  (attributes include `public_url`, a "view on site" link to the listing)
 - `sensor.<title>_price` — daily price in AUD
 - `sensor.<title>_active_bookings` — count of upcoming + in-progress bookings on that listing
 
@@ -594,8 +650,9 @@ New listings are picked up on next integration reload.
 
 ### Authentication Issues
 
-- Verify your Client ID is correct
-- If using password auth, ensure your email and password are correct
+- Ensure your email and password are correct (the same ones you use on localtrailerhire.com.au)
+- The marketplace client ID is built in — you don't need to provide one
+- If auth keeps failing, remove and re-add the integration to re-authenticate
 - Check Home Assistant logs for detailed error messages
 
 ### No Data Appearing
@@ -622,11 +679,18 @@ The integration handles rate limiting automatically with exponential backoff. If
 
 This integration uses the Sharetribe Flex Marketplace API:
 
-- **Auth Endpoint**: `POST https://flex-api.sharetribe.com/v1/auth/token`
-- **Transactions Endpoint**: `GET https://flex-api.sharetribe.com/v1/api/transactions/query`
-- **Messages Endpoint**: `POST https://flex-api.sharetribe.com/v1/api/messages/send`
+- **Auth**: `POST https://flex-api.sharetribe.com/v1/auth/token`
+- **Transactions**: `GET .../v1/api/transactions/query`
+- **Transition**: `POST .../v1/api/transactions/transition` (accept/decline/review)
+- **Send message**: `POST .../v1/api/messages/send`
+- **Read messages**: `GET .../v1/api/messages/query` *(v1.4.0)*
+- **Own listings**: `GET .../v1/api/own_listings/query`
+- **Reviews**: `GET .../v1/api/reviews/query?subjectId=<you>` *(v1.3.0)*
+- **Current user**: `GET .../v1/api/current_user/show` *(profile + stats)*
 
-The integration uses JSON format (`Accept: application/json`) for transactions queries and Transit format (`application/transit+json`) for sending messages, matching the Sharetribe web application behavior.
+The integration uses JSON format (`Accept: application/json`) for queries and Transit format (`application/transit+json`) for sending messages, matching the Sharetribe web application behavior.
+
+📖 **Full, empirically-verified API reference:** [`docs/SHARETRIBE_API.md`](docs/SHARETRIBE_API.md) — every endpoint, auth flow, payload shape, and transition, probed live against the marketplace (not just copied from Sharetribe's docs, which were wrong in several places).
 
 ## Security
 
