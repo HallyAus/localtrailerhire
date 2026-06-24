@@ -541,6 +541,12 @@ confirmation and the booking ending. Bookings whose review window has already
 closed are skipped. Each auto-review fires `localtrailerhire_review_left` (with
 `"auto": true`).
 
+**Is it armed?** Check the **`sensor.local_trailer_hire_auto_review`** diagnostic
+sensor (`enabled` / `disabled`). Its attributes show how many bookings have been
+auto-reviewed, the **last auto-review time and transaction**, and how many are
+pending retry — so you can confirm at a glance that auto-review is on and working
+without digging through logs.
+
 > The older example automation at
 > [`examples/auto_review.yaml`](examples/auto_review.yaml) still works but is
 > **superseded** by this option — keep it only for custom needs.

@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CURRENCY_DOLLAR, PERCENTAGE
+from homeassistant.const import CURRENCY_DOLLAR, PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -43,6 +43,7 @@ from .const import (
     SENSOR_NEXT_PAYOUT,
     SENSOR_NEXT_START,
     SENSOR_ACCEPTANCE_RATE,
+    SENSOR_AUTO_REVIEW_STATUS,
     SENSOR_AWAITING_REPLIES,
     SENSOR_PROFILE,
     SENSOR_RATING_AVERAGE,
@@ -92,6 +93,8 @@ async def async_setup_entry(
         AcceptanceRateSensor(coordinator, entry),
         ResponseRateSensor(coordinator, entry),
         AwaitingRepliesSensor(coordinator, entry),
+        # Diagnostic
+        AutoReviewStatusSensor(coordinator, entry),
     ]
 
     # Per-listing entities (created from the initial listings snapshot)
@@ -369,6 +372,31 @@ class AwaitingRepliesSensor(LocalTrailerHireBaseSensor):
             "latest_message": self.coordinator.latest_message,
             ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
         }
+
+
+class AutoReviewStatusSensor(LocalTrailerHireBaseSensor):
+    """Diagnostic: whether native auto-review is armed, and when it last fired."""
+
+    _attr_icon = "mdi:robot"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, SENSOR_AUTO_REVIEW_STATUS, "Auto-Review")
+
+    @property
+    def native_value(self) -> str:
+        """`enabled` when the auto-review option is on, else `disabled`."""
+        return "enabled" if self.coordinator.auto_review else "disabled"
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.coordinator.auto_review_status
 
 
 # =============================================================================

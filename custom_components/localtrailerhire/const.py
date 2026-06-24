@@ -98,6 +98,9 @@ SENSOR_ACCEPTANCE_RATE: Final = "acceptance_rate"
 SENSOR_RESPONSE_RATE: Final = "response_rate"
 SENSOR_AWAITING_REPLIES: Final = "awaiting_replies"
 
+# Diagnostic sensor — is auto-review armed, and when did it last fire
+SENSOR_AUTO_REVIEW_STATUS: Final = "auto_review"
+
 # Cap on how many active bookings have their messages scanned per poll
 # (for the awaiting-reply sensor), to bound API calls.
 MAX_MESSAGE_SCAN: Final = 25

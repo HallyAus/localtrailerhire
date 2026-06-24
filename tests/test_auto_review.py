@@ -8,6 +8,7 @@ from lth_auto_review import (
     MAX_AUTO_REVIEW_ATTEMPTS,
     is_reviewable,
     select_auto_reviews,
+    summarize_auto_reviews,
 )
 
 NOW = datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc)
@@ -110,3 +111,31 @@ def test_mixed_realistic_selection():
     assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == [
         "past_fresh"
     ]
+
+
+# --- summarize_auto_reviews --------------------------------------------------
+
+
+def test_summary_disabled_empty():
+    s = summarize_auto_reviews({}, enabled=False, rating=5)
+    assert s["enabled"] is False
+    assert s["rating"] == 5
+    assert s["auto_reviewed_total"] == 0
+    assert s["last_auto_review_at"] is None
+    assert s["last_auto_review_transaction"] is None
+    assert s["pending_retries"] == 0
+
+
+def test_summary_counts_and_latest():
+    states = {
+        "t1": {"auto_reviewed": True, "auto_reviewed_at": "2026-06-20T00:00:00Z"},
+        "t2": {"auto_reviewed": True, "auto_reviewed_at": "2026-06-23T00:00:00Z"},
+        "t3": {"auto_review_attempts": 3},  # failed, still retrying
+        "t4": {"message_sent": True},  # unrelated state
+    }
+    s = summarize_auto_reviews(states, enabled=True, rating=4)
+    assert s["enabled"] is True
+    assert s["auto_reviewed_total"] == 2
+    assert s["last_auto_review_at"] == "2026-06-23T00:00:00Z"
+    assert s["last_auto_review_transaction"] == "t2"
+    assert s["pending_retries"] == 1

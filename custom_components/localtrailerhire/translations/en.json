@@ -133,6 +133,9 @@
       },
       "awaiting_replies": {
         "name": "Awaiting Replies"
+      },
+      "auto_review": {
+        "name": "Auto-Review"
       }
     }
   },

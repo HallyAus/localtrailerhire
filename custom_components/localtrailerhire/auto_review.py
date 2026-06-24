@@ -97,3 +97,40 @@ def select_auto_reviews(
         selected.append(txn_id)
 
     return selected
+
+
+def summarize_auto_reviews(
+    transaction_states: dict[str, dict[str, Any]],
+    *,
+    enabled: bool,
+    rating: int,
+) -> dict[str, Any]:
+    """Build an at-a-glance auto-review status from the persisted store.
+
+    Returns whether auto-review is armed, the configured rating, how many
+    transactions have been auto-reviewed, the latest auto-review timestamp +
+    transaction, and how many bookings have failed attempts still pending retry.
+    """
+    last_at: str | None = None
+    last_txn: str | None = None
+    reviewed_total = 0
+    pending_retries = 0
+
+    for txn_id, state in transaction_states.items():
+        if state.get("auto_reviewed"):
+            reviewed_total += 1
+            at = state.get("auto_reviewed_at")
+            if at and (last_at is None or at > last_at):
+                last_at = at
+                last_txn = txn_id
+        elif state.get("auto_review_attempts", 0) > 0:
+            pending_retries += 1
+
+    return {
+        "enabled": enabled,
+        "rating": rating,
+        "auto_reviewed_total": reviewed_total,
+        "last_auto_review_at": last_at,
+        "last_auto_review_transaction": last_txn,
+        "pending_retries": pending_retries,
+    }

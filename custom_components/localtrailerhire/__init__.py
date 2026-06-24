@@ -18,7 +18,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import APIError, AuthenticationError, SharetribeFlexAPI
-from .auto_review import select_auto_reviews
+from .auto_review import select_auto_reviews, summarize_auto_reviews
 from .util import parse_iso_datetime
 from .const import (
     CATEGORY_IN_PROGRESS,
@@ -1188,6 +1188,15 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         if state:
             return state.get("message_sent", False)
         return False
+
+    @property
+    def auto_review_status(self) -> dict[str, Any]:
+        """At-a-glance auto-review status for the diagnostic sensor."""
+        return summarize_auto_reviews(
+            self._stored_data.get("transaction_states", {}),
+            enabled=self.auto_review,
+            rating=self.auto_review_rating,
+        )
 
     async def _refresh_awaiting_replies(
         self, bookings: list[dict[str, Any]]
