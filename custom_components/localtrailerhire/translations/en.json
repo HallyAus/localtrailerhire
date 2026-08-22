@@ -22,13 +22,17 @@
           "scan_interval": "Update interval (minutes)",
           "last_transitions": "Transaction filter (optional, leave empty for all)",
           "include_sensitive_data": "Include sensitive customer details",
-          "include_booking_lists": "Include booking lists in sensor attributes"
+          "include_booking_lists": "Include booking lists in sensor attributes",
+          "customer_history_retention": "Customer/message history retention",
+          "archive_messages": "Archive message content"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
           "last_transitions": "Leave empty to fetch ALL transactions (recommended). Only use if you need to filter by specific transitions.",
           "include_sensitive_data": "When enabled, includes full driver licence details and unmasked phone numbers. When disabled, licence is hidden and phone is masked (e.g. 0412****78).",
-          "include_booking_lists": "When enabled, sensor attributes include full booking lists. Disable to reduce state size."
+          "include_booking_lists": "When enabled, active booking sensors expose lists in the UI; large attributes are excluded from recorder history.",
+          "customer_history_retention": "Keep archived records for 90 days, one year, or forever.",
+          "archive_messages": "Opt in to persist message bodies. Sync is incremental and can be cleared at any time."
         }
       },
       "reauth_confirm": {
@@ -64,7 +68,9 @@
           "include_booking_lists": "Include booking lists in sensor attributes",
           "auto_review": "Auto-leave a review after each booking",
           "auto_review_rating": "Auto-review rating (1-5)",
-          "auto_review_content": "Auto-review text"
+          "auto_review_content": "Auto-review text",
+          "customer_history_retention": "Customer/message history retention",
+          "archive_messages": "Archive message content"
         },
         "data_description": {
           "scan_interval": "How often to fetch new booking data (1-60 minutes)",
@@ -73,9 +79,21 @@
           "include_booking_lists": "When enabled, sensor attributes include full booking lists. Disable to reduce state size.",
           "auto_review": "When enabled, the integration automatically posts a provider review once a past booking becomes reviewable. Runs on each update so it survives Home Assistant restarts.",
           "auto_review_rating": "Star rating to post automatically (default 5).",
-          "auto_review_content": "The review text to post automatically."
+          "auto_review_content": "The review text to post automatically.",
+          "customer_history_retention": "Keep archived records for 90 days, one year, or forever.",
+          "archive_messages": "Opt in to persist message bodies. Sync is incremental and can be cleared at any time."
         }
       }
+    }
+  },
+  "issues": {
+    "authentication_failed": {
+      "title": "Local Trailer Hire needs to be re-authenticated",
+      "description": "Authentication failed. Open the integration and enter valid Local Trailer Hire credentials."
+    },
+    "auto_review_failed": {
+      "title": "Automatic reviews need attention",
+      "description": "Automatic review posting has failed repeatedly for {count} booking(s). Use the dry-run service to inspect eligibility, then retry when ready."
     }
   },
   "entity": {

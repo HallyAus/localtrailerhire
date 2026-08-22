@@ -128,7 +128,9 @@ password is the easiest path.
 - **Update Interval**: How often to fetch booking data (1-60 minutes, default: 10)
 - **Transaction Transitions**: Leave empty to fetch all transactions (recommended)
 - **Include Sensitive Data**: Show full driver licence and unmasked phone numbers
-- **Include Booking Lists**: Include full booking lists in sensor attributes (can be disabled to reduce state size)
+- **Include Booking Lists**: Show active booking lists in live sensor attributes (off by default; large lists and update timestamps are excluded from recorder history)
+- **Customer/message history retention** *(v1.6.0)*: Keep archives for 90 days, one year, or forever (default, so older customer references are not silently lost)
+- **Archive message content** *(v1.6.0)*: Opt in to persistent, incremental message history (off by default)
 - **Auto-leave a review after each booking** *(v1.3.0)*: When enabled, automatically posts a provider review once a past booking becomes reviewable. **Off by default.** See [Auto-Review](#auto-review) below.
 - **Auto-review rating** *(v1.3.0)*: Star rating to post automatically (default: 5)
 - **Auto-review text** *(v1.3.0)*: The review text to post automatically
@@ -522,6 +524,19 @@ Fires the `localtrailerhire_review_left` event on success. Use this service for
 manual or one-off reviews. For hands-off reviews, use the built-in
 **[Auto-Review](#auto-review)** option instead of a `delay`-based automation.
 
+### Archive and auto-review control services *(v1.6.0)*
+
+- `export_customer_history`: returns the customer/booking archive as JSON or CSV.
+- `clear_customer_history`: clears everything (`scope: all`) or only private contact/licence/referrer values (`scope: sensitive`).
+- `sync_message_history`: advances a bounded, persisted conversation backfill cursor (`batch_size`: 1–50).
+- `export_message_history` / `clear_message_history`: export or permanently remove opted-in message content.
+- `auto_review_dry_run`: returns candidate transaction IDs, due-now count, and timestamp without posting.
+- `auto_review_retry_now`: immediately retries one specified candidate or all currently reviewable candidates, bypassing backoff.
+
+Export services return their data in the Home Assistant service response. In
+Developer Tools → Actions, enable the response display and save the returned
+`content` if you want a file. No private export is silently written to disk.
+
 ## Auto-Review
 
 *(v1.3.0)* The integration can post a provider review for you automatically —
@@ -541,11 +556,16 @@ confirmation and the booking ending. Bookings whose review window has already
 closed are skipped. Each auto-review fires `localtrailerhire_review_left` (with
 `"auto": true`).
 
+If Sharetribe has not opened the provider-review transition yet, the integration
+retries with a persisted exponential backoff (30 minutes up to 12 hours) for the
+rest of the review window. This avoids both rapid API polling and permanently
+giving up shortly after the booking ends.
+
 **Is it armed?** Check the **`sensor.local_trailer_hire_auto_review`** diagnostic
-sensor (`enabled` / `disabled`). Its attributes show how many bookings have been
-auto-reviewed, the **last auto-review time and transaction**, and how many are
-pending retry — so you can confirm at a glance that auto-review is on and working
-without digging through logs.
+sensor (`enabled` / `disabled`). Its attributes include candidate/due counts,
+the next attempt, latest sanitized failure type, totals, and the last successful
+review. Repeated failures and expired authentication also create Home Assistant
+Repairs notifications.
 
 > The older example automation at
 > [`examples/auto_review.yaml`](examples/auto_review.yaml) still works but is
@@ -705,6 +725,11 @@ The integration uses JSON format (`Accept: application/json`) for queries and Tr
 - Refresh tokens are automatically renewed and stored
 - Password credentials are only used when refresh token is unavailable
 - Sensitive customer data (licence, phone) can be masked via options
+- Customer history is retained per config entry; disabling sensitive data
+  scrubs stored phone, address, licence and referrer details on the next refresh
+- Retention is configurable, and services can export or permanently clear both
+  customer and opted-in message archives
+- API error response bodies and customer names are not written to logs
 
 ## License
 

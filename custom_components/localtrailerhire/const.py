@@ -1,6 +1,5 @@
 """Constants for the Local Trailer Hire integration."""
 
-from datetime import timedelta
 from typing import Final
 
 DOMAIN: Final = "localtrailerhire"
@@ -66,9 +65,17 @@ CONF_INCLUDE_SENSITIVE: Final = "include_sensitive_data"
 # Default for sensitive data (OFF for privacy)
 DEFAULT_INCLUDE_SENSITIVE: Final = False
 
-# Default for including booking list attributes (ON by default)
+# Full booking lists remain available in the UI, but default off to avoid large
+# recorder rows on new installations.
 CONF_INCLUDE_BOOKING_LISTS: Final = "include_booking_lists"
-DEFAULT_INCLUDE_BOOKING_LISTS: Final = True
+DEFAULT_INCLUDE_BOOKING_LISTS: Final = False
+
+# Privacy/archive options
+CONF_CUSTOMER_HISTORY_RETENTION: Final = "customer_history_retention"
+CONF_ARCHIVE_MESSAGES: Final = "archive_messages"
+DEFAULT_CUSTOMER_HISTORY_RETENTION: Final = "forever"
+DEFAULT_ARCHIVE_MESSAGES: Final = False
+RETENTION_OPTIONS: Final = ("90_days", "one_year", "forever")
 
 # Sensor names - Count sensors
 SENSOR_UPCOMING_COUNT: Final = "upcoming_bookings_count"
@@ -118,16 +125,18 @@ LISTING_STATE_DRAFT: Final = "draft"
 LISTING_STATE_PENDING_APPROVAL: Final = "pendingApproval"
 
 # Transitions that indicate earned/completed payout
-PAYOUT_TRANSITIONS: Final = frozenset([
-    "transition/complete",
-    "transition/review-1-by-customer",
-    "transition/review-1-by-provider",
-    "transition/review-2-by-customer",
-    "transition/review-2-by-provider",
-    "transition/expire-review-period",
-    "transition/expire-customer-review-period",
-    "transition/expire-provider-review-period",
-])
+PAYOUT_TRANSITIONS: Final = frozenset(
+    [
+        "transition/complete",
+        "transition/review-1-by-customer",
+        "transition/review-1-by-provider",
+        "transition/review-2-by-customer",
+        "transition/review-2-by-provider",
+        "transition/expire-review-period",
+        "transition/expire-customer-review-period",
+        "transition/expire-provider-review-period",
+    ]
+)
 
 # Attributes
 ATTR_BOOKINGS: Final = "bookings"
@@ -141,21 +150,25 @@ MESSAGES_QUERY_URL: Final = "https://flex-api.sharetribe.com/v1/api/messages/que
 
 # Transitions that indicate a confirmed booking
 # These are the transitions where a booking has been confirmed/accepted
-CONFIRMED_TRANSITIONS: Final = frozenset([
-    "transition/confirm-payment",
-    "transition/confirm-payment-instant-booking",
-    "transition/confirm-payment-instant-book",  # Alternative naming
-    "transition/expire-refundable-period",
-    "transition/accept",
-    "transition/change-accepted-booking",
-    "transition/change-non-refundable-booking",
-])
+CONFIRMED_TRANSITIONS: Final = frozenset(
+    [
+        "transition/confirm-payment",
+        "transition/confirm-payment-instant-booking",
+        "transition/confirm-payment-instant-book",  # Alternative naming
+        "transition/expire-refundable-period",
+        "transition/accept",
+        "transition/change-accepted-booking",
+        "transition/change-non-refundable-booking",
+    ]
+)
 
 # Transitions that indicate an incoming booking request awaiting host action
-REQUEST_TRANSITIONS: Final = frozenset([
-    "transition/request-payment",
-    "transition/request-payment-after-enquiry",
-])
+REQUEST_TRANSITIONS: Final = frozenset(
+    [
+        "transition/request-payment",
+        "transition/request-payment-after-enquiry",
+    ]
+)
 
 # Transition names sent to /transactions/transition for accept / decline
 TRANSITION_ACCEPT: Final = "transition/accept"
@@ -189,12 +202,18 @@ CONF_AUTO_REVIEW_CONTENT: Final = "auto_review_content"
 # Transitions meaning the provider review is already done or its window has
 # closed; auto-review must skip these. Verified against the live marketplace
 # process (e.g. expire-provider-review-period appears on bookings whose review
-# window lapsed unreviewed).
+# window lapsed unreviewed). The customer-second/expiry transitions also imply
+# the provider reviewed first, while the aggregate expiry/payout transitions
+# are terminal for both parties.
 PROVIDER_REVIEW_DONE_TRANSITIONS: Final = frozenset(
     {
         "transition/review-1-by-provider",
         "transition/review-2-by-provider",
+        "transition/review-2-by-customer",
+        "transition/expire-review-period",
+        "transition/expire-customer-review-period",
         "transition/expire-provider-review-period",
+        "transition/payout-after-reviews",
     }
 )
 
@@ -219,6 +238,13 @@ SERVICE_MARK_MESSAGE_SENT: Final = "mark_message_sent"
 SERVICE_ACCEPT_BOOKING: Final = "accept_booking"
 SERVICE_DECLINE_BOOKING: Final = "decline_booking"
 SERVICE_LEAVE_REVIEW: Final = "leave_review"
+SERVICE_EXPORT_CUSTOMER_HISTORY: Final = "export_customer_history"
+SERVICE_CLEAR_CUSTOMER_HISTORY: Final = "clear_customer_history"
+SERVICE_SYNC_MESSAGE_HISTORY: Final = "sync_message_history"
+SERVICE_EXPORT_MESSAGE_HISTORY: Final = "export_message_history"
+SERVICE_CLEAR_MESSAGE_HISTORY: Final = "clear_message_history"
+SERVICE_AUTO_REVIEW_DRY_RUN: Final = "auto_review_dry_run"
+SERVICE_AUTO_REVIEW_RETRY_NOW: Final = "auto_review_retry_now"
 
 # Event names
 EVENT_BOOKING_CONFIRMED: Final = "localtrailerhire_booking_confirmed"

@@ -7,11 +7,10 @@ responseRate, numBookings, numHires, missedEarnings, etc.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
 from lth_api import SharetribeFlexAPI
 
 
@@ -39,7 +38,18 @@ def _current_user_payload() -> dict[str, Any]:
                             "responseRate": 100,
                             "numBookings": 10,
                             "numHires": 8,
+                            "numTransactions": 12,
+                            "numBookingRequests": 11,
+                            "numAcceptedBookings": 9,
+                            "numDeclinedBookings": 1,
+                            "numExpiredBookings": 1,
+                            "numCancelledBookings": 2,
+                            "numAbortedBookings": 0,
                             "missedEarnings": 200,
+                            "missedEarningsDueToDeclinedBookings": 100,
+                            "missedEarningsDueToExpiredBookings": 75,
+                            "missedEarningsDueToAbortedBookings": 25,
+                            "updatedAt": "2026-06-30T00:00:00Z",
                         },
                         "bookingStats-2026-06": {  # monthly — must be ignored
                             "acceptanceRate": 50,
@@ -68,7 +78,18 @@ def test_parse_current_user_uses_latest_annual_stats():
     assert stats["response_rate"] == 100
     assert stats["num_bookings"] == 10
     assert stats["num_hires"] == 8
+    assert stats["num_transactions"] == 12
+    assert stats["num_booking_requests"] == 11
+    assert stats["num_accepted_bookings"] == 9
+    assert stats["num_declined_bookings"] == 1
+    assert stats["num_expired_bookings"] == 1
+    assert stats["num_cancelled_bookings"] == 2
+    assert stats["num_aborted_bookings"] == 0
     assert stats["missed_earnings"] == 200
+    assert stats["missed_earnings_declined"] == 100
+    assert stats["missed_earnings_expired"] == 75
+    assert stats["missed_earnings_aborted"] == 25
+    assert stats["updated_at"] == "2026-06-30T00:00:00Z"
 
 
 def test_parse_current_user_empty_when_no_stats():
@@ -115,7 +136,7 @@ class _Session:
 async def test_get_current_user_fetches_and_caches_id():
     api = SharetribeFlexAPI(session=_Session([_Resp(_current_user_payload())]), client_id="c")
     api._access_token = "tok"
-    api._token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    api._token_expiry = datetime.now(UTC) + timedelta(hours=1)
     profile = await api.get_current_user()
     assert profile["display_name"] == "Daniel H"
     # id cached → get_current_user_id makes no further request

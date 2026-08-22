@@ -3,36 +3,43 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import APIError, AuthenticationError, SharetribeFlexAPI
-from .auto_review import select_auto_reviews, summarize_auto_reviews
-from .util import parse_iso_datetime
+from .auto_review import (
+    auto_review_failure_state,
+    select_auto_reviews,
+    summarize_auto_reviews,
+)
 from .const import (
     CATEGORY_IN_PROGRESS,
     CATEGORY_UPCOMING,
+    CONF_ARCHIVE_MESSAGES,
     CONF_AUTO_REVIEW,
     CONF_AUTO_REVIEW_CONTENT,
     CONF_AUTO_REVIEW_RATING,
     CONF_CLIENT_ID,
+    CONF_CUSTOMER_HISTORY_RETENTION,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONFIRMED_TRANSITIONS,
+    DEFAULT_ARCHIVE_MESSAGES,
     DEFAULT_AUTO_REVIEW,
+    DEFAULT_CUSTOMER_HISTORY_RETENTION,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
     DEFAULT_REVIEW_CONTENT,
@@ -48,17 +55,32 @@ from .const import (
     PROVIDER_REVIEW_TRANSITIONS,
     REQUEST_TRANSITIONS,
     SERVICE_ACCEPT_BOOKING,
+    SERVICE_AUTO_REVIEW_DRY_RUN,
+    SERVICE_AUTO_REVIEW_RETRY_NOW,
+    SERVICE_CLEAR_CUSTOMER_HISTORY,
+    SERVICE_CLEAR_MESSAGE_HISTORY,
     SERVICE_DECLINE_BOOKING,
+    SERVICE_EXPORT_CUSTOMER_HISTORY,
+    SERVICE_EXPORT_MESSAGE_HISTORY,
     SERVICE_FIRE_CONFIRMED_EVENTS,
     SERVICE_LEAVE_REVIEW,
     SERVICE_MARK_MESSAGE_SENT,
     SERVICE_REFRESH_NOW,
     SERVICE_SEND_MESSAGE,
+    SERVICE_SYNC_MESSAGE_HISTORY,
     STORAGE_KEY,
     STORAGE_VERSION,
     TRANSITION_ACCEPT,
     TRANSITION_DECLINE,
 )
+from .customer_history import (
+    clear_customer_history,
+    export_customer_history,
+    merge_customer_history,
+    prune_customer_history,
+)
+from .message_archive import export_message_archive, merge_messages, prune_message_archive
+from .util import parse_iso_datetime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,10 +120,9 @@ class LocalTrailerHireStore(Store):
                         "event_fired_at": None,
                     },
                 )
-            _LOGGER.info(
-                "Migrated %d transactions from storage v1 to v2", len(seen)
-            )
+            _LOGGER.info("Migrated %d transactions from storage v1 to v2", len(seen))
         return old_data
+
 
 # Service schemas
 SERVICE_SEND_MESSAGE_SCHEMA = vol.Schema(
@@ -151,36 +172,52 @@ SERVICE_LEAVE_REVIEW_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_EXPORT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("format", default="json"): vol.In(("json", "csv")),
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+SERVICE_CLEAR_HISTORY_SCHEMA = vol.Schema(
+    {
+        vol.Optional("scope", default="all"): vol.In(("sensitive", "all")),
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+SERVICE_SYNC_MESSAGES_SCHEMA = vol.Schema(
+    {
+        vol.Optional("batch_size", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+SERVICE_AUTO_REVIEW_CONTROL_SCHEMA = vol.Schema(
+    {
+        vol.Optional("transaction_id"): cv.string,
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
 
-def _get_entry_data(
-    hass: HomeAssistant, config_entry_id: str | None
-) -> dict[str, Any]:
+
+def _get_entry_data(hass: HomeAssistant, config_entry_id: str | None) -> dict[str, Any]:
     """Resolve the integration data dict for a given (or sole) config entry.
 
     If ``config_entry_id`` is provided, it must match a configured entry.
     Otherwise, exactly one entry must be configured.
     """
     entries = hass.data.get(DOMAIN, {})
-    valid = {
-        eid: data
-        for eid, data in entries.items()
-        if isinstance(data, dict) and "api" in data
-    }
+    valid = {eid: data for eid, data in entries.items() if isinstance(data, dict) and "api" in data}
 
     if not valid:
         raise HomeAssistantError("No Local Trailer Hire integration configured")
 
     if config_entry_id:
         if config_entry_id not in valid:
-            raise HomeAssistantError(
-                f"config_entry_id {config_entry_id} not found"
-            )
+            raise HomeAssistantError(f"config_entry_id {config_entry_id} not found")
         return valid[config_entry_id]
 
     if len(valid) > 1:
         raise HomeAssistantError(
-            "Multiple Local Trailer Hire entries configured; "
-            "specify config_entry_id"
+            "Multiple Local Trailer Hire entries configured; specify config_entry_id"
         )
 
     return next(iter(valid.values()))
@@ -194,9 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Each config entry gets its own store keyed by entry_id; a single shared
     # key would let multiple provider accounts clobber each other's state.
     # ``LocalTrailerHireStore`` handles schema-version migration on load.
-    store = LocalTrailerHireStore(
-        hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry.entry_id}"
-    )
+    store = LocalTrailerHireStore(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry.entry_id}")
     stored_data = await store.async_load()
 
     if stored_data is None:
@@ -208,8 +243,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         legacy_data = await legacy_store.async_load()
         if legacy_data:
             _LOGGER.info(
-                "Migrating transaction state from legacy shared store to "
-                "per-entry store for %s",
+                "Migrating transaction state from legacy shared store to per-entry store for %s",
                 entry.entry_id,
             )
             stored_data = legacy_data
@@ -219,6 +253,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stored_data = stored_data or {}
     stored_data.setdefault("sent_messages", {})
     stored_data.setdefault("transaction_states", {})
+    stored_data.setdefault("customer_history", {})
+    stored_data.setdefault("message_history", {})
+    stored_data.setdefault("message_sync_cursor", 0)
 
     # Get configuration. ``client_id`` is now hardcoded to the LocalTrailerHire
     # marketplace; we still read from entry.data for backwards compat with
@@ -229,16 +266,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-    transitions_str = entry.options.get(
-        CONF_LAST_TRANSITIONS, ",".join(DEFAULT_LAST_TRANSITIONS)
-    )
+    transitions_str = entry.options.get(CONF_LAST_TRANSITIONS, ",".join(DEFAULT_LAST_TRANSITIONS))
     last_transitions = [t.strip() for t in transitions_str.split(",") if t.strip()]
     include_sensitive = entry.options.get(CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE)
+    history_retention = entry.options.get(
+        CONF_CUSTOMER_HISTORY_RETENTION, DEFAULT_CUSTOMER_HISTORY_RETENTION
+    )
+    archive_messages = entry.options.get(CONF_ARCHIVE_MESSAGES, DEFAULT_ARCHIVE_MESSAGES)
     auto_review = entry.options.get(CONF_AUTO_REVIEW, DEFAULT_AUTO_REVIEW)
     auto_review_rating = entry.options.get(CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING)
-    auto_review_content = entry.options.get(
-        CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT
-    )
+    auto_review_content = entry.options.get(CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT)
 
     # Create API client
     session = async_get_clientsession(hass)
@@ -254,9 +291,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await api.authenticate()
     except AuthenticationError as err:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"authentication_{entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="authentication_failed",
+        )
         raise ConfigEntryAuthFailed("Authentication failed") from err
     except APIError as err:
         raise ConfigEntryNotReady("API connection failed") from err
+    ir.async_delete_issue(hass, DOMAIN, f"authentication_{entry.entry_id}")
 
     # Update refresh token if changed
     if api.refresh_token and api.refresh_token != refresh_token:
@@ -271,6 +317,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry=entry,
         last_transitions=last_transitions,
         include_sensitive=include_sensitive,
+        history_retention=history_retention,
+        archive_messages=archive_messages,
         update_interval=timedelta(minutes=scan_interval),
         store=store,
         stored_data=stored_data,
@@ -296,17 +344,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         message = call.data.get("message", "")
 
         _LOGGER.debug(
-            "SERVICE CALL: localtrailerhire.send_message - "
-            "transaction_id=%s, message_length=%d",
+            "SERVICE CALL: localtrailerhire.send_message - transaction_id=%s, message_length=%d",
             transaction_id[:8] + "..." if transaction_id else "EMPTY",
             len(message) if message else 0,
         )
 
         # Validate inputs
         if not transaction_id or not isinstance(transaction_id, str):
-            raise HomeAssistantError(
-                "transaction_id is required and must be a non-empty string"
-            )
+            raise HomeAssistantError("transaction_id is required and must be a non-empty string")
 
         # Basic UUID format validation (should be 36 chars with hyphens)
         transaction_id = transaction_id.strip()
@@ -316,9 +361,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
         if not message or not isinstance(message, str):
-            raise HomeAssistantError(
-                "message is required and must be a non-empty string"
-            )
+            raise HomeAssistantError("message is required and must be a non-empty string")
 
         message = message.strip()
         if not message:
@@ -340,13 +383,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 EVENT_MESSAGE_SENT,
                 {
                     "transaction_id": transaction_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
             )
 
-            _LOGGER.debug(
-                "send_message succeeded for transaction %s", transaction_id
-            )
+            _LOGGER.debug("send_message succeeded for transaction %s", transaction_id)
 
         except AuthenticationError as err:
             _LOGGER.error("Authentication failed when sending message: %s", err)
@@ -356,15 +397,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         except APIError as err:
             _LOGGER.error("Failed to send message: %s", err)
-            raise HomeAssistantError(
-                f"Failed to send message: {err}"
-            ) from err
+            raise HomeAssistantError(f"Failed to send message: {err}") from err
 
         except Exception as err:
             _LOGGER.exception("Unexpected error sending message: %s", err)
-            raise HomeAssistantError(
-                f"Unexpected error: {type(err).__name__}"
-            ) from err
+            raise HomeAssistantError(f"Unexpected error: {type(err).__name__}") from err
 
     async def async_refresh_now(call: ServiceCall) -> None:
         """Force an immediate coordinator refresh.
@@ -390,9 +427,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         transaction_id = call.data.get("transaction_id", "").strip()
 
         if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError(
-                "transaction_id must be a valid UUID format"
-            )
+            raise HomeAssistantError("transaction_id must be a valid UUID format")
 
         entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
         coord = entry_data.get("coordinator")
@@ -404,7 +439,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_fire_confirmed_events(call: ServiceCall) -> None:
         """Re-scan and fire confirmed events for bookings in the last N hours."""
         hours_back = call.data.get("hours_back", 24)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        cutoff = datetime.now(UTC) - timedelta(hours=hours_back)
 
         entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
         coord = entry_data.get("coordinator")
@@ -412,15 +447,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise HomeAssistantError("No coordinator available")
         await coord.fire_confirmed_events_since(cutoff, dry_run=False)
 
-    async def _async_call_transition(
-        call: ServiceCall, transition: str
-    ) -> None:
+    async def _async_call_transition(call: ServiceCall, transition: str) -> None:
         """Shared implementation for accept_booking / decline_booking."""
         transaction_id = (call.data.get("transaction_id") or "").strip()
         if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError(
-                "transaction_id must be a valid UUID format"
-            )
+            raise HomeAssistantError("transaction_id must be a valid UUID format")
 
         entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
         api_client = entry_data["api"]
@@ -433,9 +464,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Authentication failed. Please reconfigure the integration."
             ) from err
         except APIError as err:
-            raise HomeAssistantError(
-                f"Failed to {transition}: {err}"
-            ) from err
+            raise HomeAssistantError(f"Failed to {transition}: {err}") from err
 
         # Refresh data so sensors reflect the new state quickly
         if coord:
@@ -453,9 +482,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Post a provider review on a completed booking."""
         transaction_id = (call.data.get("transaction_id") or "").strip()
         if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError(
-                "transaction_id must be a valid UUID format"
-            )
+            raise HomeAssistantError("transaction_id must be a valid UUID format")
 
         rating = call.data.get("rating", DEFAULT_REVIEW_RATING)
         content = call.data.get("review_content", DEFAULT_REVIEW_CONTENT)
@@ -485,12 +512,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "transaction_id": transaction_id,
                 "transition": result.get("transition"),
                 "rating": rating,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
         if coord:
             await coord.async_request_refresh()
+
+    async def async_export_customer(call: ServiceCall) -> dict[str, Any]:
+        """Return the retained customer archive without writing it to disk."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        output_format = call.data.get("format", "json")
+        return {
+            "format": output_format,
+            "filename": f"localtrailerhire-customers.{output_format}",
+            "customer_count": len(coord.customer_history),
+            "content": export_customer_history(coord.customer_history, output_format),
+        }
+
+    async def async_clear_customer(call: ServiceCall) -> None:
+        """Clear all customer history or only its sensitive fields."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        await coord.clear_customer_history(call.data.get("scope", "all"))
+
+    async def async_sync_messages(call: ServiceCall) -> dict[str, Any]:
+        """Incrementally backfill the next bounded batch of conversations."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        return await coord.sync_message_history(call.data.get("batch_size", 10))
+
+    async def async_export_messages(call: ServiceCall) -> dict[str, Any]:
+        """Return the optional persistent message archive."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        output_format = call.data.get("format", "json")
+        archive = coord.message_history
+        return {
+            "format": output_format,
+            "filename": f"localtrailerhire-messages.{output_format}",
+            "conversation_count": len(archive),
+            "message_count": sum(len(record.get("messages", {})) for record in archive.values()),
+            "content": export_message_archive(archive, output_format),
+        }
+
+    async def async_clear_messages(call: ServiceCall) -> None:
+        """Delete the persisted message archive."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        await coord.clear_message_history()
+
+    async def async_auto_review_dry_run(call: ServiceCall) -> dict[str, Any]:
+        """Explain which transactions are reviewable without posting."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        return coord.auto_review_dry_run(call.data.get("transaction_id"))
+
+    async def async_auto_review_retry_now(call: ServiceCall) -> dict[str, Any]:
+        """Retry eligible reviews immediately, bypassing persisted backoff."""
+        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
+        return await coord.retry_auto_reviews_now(call.data.get("transaction_id"))
 
     # Register services (each independently to handle upgrades)
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
@@ -549,6 +625,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=SERVICE_LEAVE_REVIEW_SCHEMA,
         )
 
+    response_services = (
+        (SERVICE_EXPORT_CUSTOMER_HISTORY, async_export_customer, SERVICE_EXPORT_SCHEMA),
+        (SERVICE_EXPORT_MESSAGE_HISTORY, async_export_messages, SERVICE_EXPORT_SCHEMA),
+        (
+            SERVICE_AUTO_REVIEW_DRY_RUN,
+            async_auto_review_dry_run,
+            SERVICE_AUTO_REVIEW_CONTROL_SCHEMA,
+        ),
+    )
+    for service, handler, schema in response_services:
+        if not hass.services.has_service(DOMAIN, service):
+            hass.services.async_register(
+                DOMAIN,
+                service,
+                handler,
+                schema=schema,
+                supports_response=SupportsResponse.ONLY,
+            )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SYNC_MESSAGE_HISTORY):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SYNC_MESSAGE_HISTORY,
+            async_sync_messages,
+            schema=SERVICE_SYNC_MESSAGES_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_AUTO_REVIEW_RETRY_NOW):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_AUTO_REVIEW_RETRY_NOW,
+            async_auto_review_retry_now,
+            schema=SERVICE_AUTO_REVIEW_CONTROL_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_CUSTOMER_HISTORY):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAR_CUSTOMER_HISTORY,
+            async_clear_customer,
+            schema=SERVICE_CLEAR_HISTORY_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_MESSAGE_HISTORY):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAR_MESSAGE_HISTORY,
+            async_clear_messages,
+            schema=SERVICE_REFRESH_NOW_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Listen for options updates
@@ -572,6 +698,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_ACCEPT_BOOKING,
                 SERVICE_DECLINE_BOOKING,
                 SERVICE_LEAVE_REVIEW,
+                SERVICE_EXPORT_CUSTOMER_HISTORY,
+                SERVICE_CLEAR_CUSTOMER_HISTORY,
+                SERVICE_SYNC_MESSAGE_HISTORY,
+                SERVICE_EXPORT_MESSAGE_HISTORY,
+                SERVICE_CLEAR_MESSAGE_HISTORY,
+                SERVICE_AUTO_REVIEW_DRY_RUN,
+                SERVICE_AUTO_REVIEW_RETRY_NOW,
             ):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
@@ -605,6 +738,8 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         entry: ConfigEntry,
         last_transitions: list[str],
         include_sensitive: bool,
+        history_retention: str,
+        archive_messages: bool,
         update_interval: timedelta,
         store: Store,
         stored_data: dict[str, Any],
@@ -623,6 +758,8 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self.entry = entry
         self.last_transitions = last_transitions
         self.include_sensitive = include_sensitive
+        self.history_retention = history_retention
+        self.archive_messages = archive_messages
         self.auto_review = auto_review
         self.auto_review_rating = auto_review_rating
         self.auto_review_content = auto_review_content
@@ -632,6 +769,11 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         # Ensure expected keys exist (storage migration handles legacy data)
         self._stored_data.setdefault("transaction_states", {})
         self._stored_data.setdefault("sent_messages", {})
+        self._stored_data.setdefault("customer_history", {})
+        self._stored_data.setdefault("message_history", {})
+        self._stored_data.setdefault("message_sync_cursor", 0)
+        self.customer_history: dict[str, Any] = self._stored_data["customer_history"]
+        self.message_history: dict[str, Any] = self._stored_data["message_history"]
 
         # Listings cache (refreshed each update)
         self.listings: list[dict[str, Any]] = []
@@ -658,7 +800,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
     async def _async_update_data(self) -> list[dict[str, Any]]:
         """Fetch data from API with detailed debug logging."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.last_fetch_utc = now.isoformat()
 
         try:
@@ -667,6 +809,22 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 include_sensitive=self.include_sensitive,
             )
 
+            # Retain a bounded, customer-id keyed reference archive. Sensitive
+            # contact fields are only kept when explicitly enabled; turning the
+            # option off scrubs any values retained by an earlier poll.
+            customer_history, history_changed = merge_customer_history(
+                self._stored_data.get("customer_history"),
+                bookings,
+                include_sensitive=self.include_sensitive,
+            )
+            ir.async_delete_issue(self.hass, DOMAIN, f"authentication_{self.entry.entry_id}")
+            customer_history = prune_customer_history(customer_history, self.history_retention, now)
+            history_changed = history_changed or customer_history != self.customer_history
+            self.customer_history = customer_history
+            if history_changed:
+                self._stored_data["customer_history"] = customer_history
+                await self._store.async_save(self._stored_data)
+
             # Update diagnostics
             self.last_success_utc = now.isoformat()
             self.total_fetched = len(bookings)
@@ -674,9 +832,8 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             self.pages_fetched = len(diagnostics.get("pages", []))
 
             # Update refresh token if it changed
-            if (
-                self.api.refresh_token
-                and self.api.refresh_token != self.entry.data.get(CONF_REFRESH_TOKEN)
+            if self.api.refresh_token and self.api.refresh_token != self.entry.data.get(
+                CONF_REFRESH_TOKEN
             ):
                 new_data = dict(self.entry.data)
                 new_data[CONF_REFRESH_TOKEN] = self.api.refresh_token
@@ -711,16 +868,24 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             # Scan active bookings for unanswered customer messages (best-effort)
             try:
                 await self._refresh_awaiting_replies(bookings)
-            except Exception:  # noqa: BLE001 - never let the scan break the poll
+            except Exception:
                 _LOGGER.exception("Awaiting-reply scan failed")
+
+            if self.archive_messages:
+                try:
+                    await self.sync_message_history(min(5, MAX_MESSAGE_SCAN), bookings=bookings)
+                except Exception:
+                    _LOGGER.exception("Incremental message archive sync failed")
 
             # Native auto-review pass (opt-in). Best-effort: a failure here must
             # never fail the data update.
             if self.auto_review:
                 try:
                     await self._run_auto_review(bookings, now)
-                except Exception:  # noqa: BLE001 - never let auto-review break the poll
+                except Exception:
                     _LOGGER.exception("Auto-review pass failed")
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, f"auto_review_{self.entry.entry_id}")
 
             # Find newest transaction by last_transitioned_at
             newest_txn = self._find_newest_transaction(bookings)
@@ -728,7 +893,6 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 self.newest_transaction_id = newest_txn.get("transaction_id")
 
             # Debug logging: summary of refresh
-            upcoming_count = sum(1 for b in bookings if b.get("category") == CATEGORY_UPCOMING)
             _LOGGER.debug(
                 "Refresh ok: fetched=%d pages=%d newest_last_transitioned_at=%s confirmed_new=%d",
                 self.total_fetched,
@@ -744,6 +908,14 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         except AuthenticationError as err:
             # Trigger reauth flow
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"authentication_{self.entry.entry_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="authentication_failed",
+            )
             raise ConfigEntryAuthFailed("Authentication failed") from err
 
         except APIError as err:
@@ -753,9 +925,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             _LOGGER.exception("Unexpected error fetching data")
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
-    def _find_newest_transaction(
-        self, bookings: list[dict[str, Any]]
-    ) -> dict[str, Any] | None:
+    def _find_newest_transaction(self, bookings: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Find the transaction with the most recent last_transitioned_at."""
         newest = None
         newest_dt = None
@@ -770,9 +940,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         return newest
 
-    def _log_newest_transactions(
-        self, bookings: list[dict[str, Any]], count: int = 5
-    ) -> None:
+    def _log_newest_transactions(self, bookings: list[dict[str, Any]], count: int = 5) -> None:
         """Log the N newest transactions by last_transitioned_at for debugging."""
         # Sort by last_transitioned_at descending
         sorted_bookings = sorted(
@@ -791,9 +959,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 booking.get("listing_title", "?")[:30],  # Truncate listing title
             )
 
-    async def _detect_confirmed_bookings(
-        self, bookings: list[dict[str, Any]]
-    ) -> int:
+    async def _detect_confirmed_bookings(self, bookings: list[dict[str, Any]]) -> int:
         """Detect newly confirmed bookings and fire events.
 
         A booking is considered "newly confirmed" when:
@@ -806,7 +972,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         Returns the count of new confirmations detected.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         transaction_states = self._stored_data.get("transaction_states", {})
         changes_made = False
         confirmed_count = 0
@@ -882,10 +1048,9 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 confirmed_count += 1
 
                 _LOGGER.info(
-                    "Booking confirmed: txn=%s transition=%s customer=%s listing=%s",
+                    "Booking confirmed: txn=%s transition=%s listing=%s",
                     txn_id,
                     last_transition,
-                    booking.get("customer_display_name") or booking.get("customer_first_name", ""),
                     booking.get("listing_title", ""),
                 )
                 _LOGGER.debug(
@@ -938,16 +1103,14 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         return confirmed_count
 
-    async def _detect_booking_requests(
-        self, bookings: list[dict[str, Any]]
-    ) -> int:
+    async def _detect_booking_requests(self, bookings: list[dict[str, Any]]) -> int:
         """Detect newly received booking requests and fire events.
 
         A request is "newly received" when ``last_transition`` is in
         ``REQUEST_TRANSITIONS`` and we have not already fired the request
         event for that transitioned_at value.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         transaction_states = self._stored_data.get("transaction_states", {})
         changes_made = False
         request_count = 0
@@ -961,9 +1124,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 continue
 
             previously = transaction_states.get(txn_id)
-            already_fired_at = (
-                previously.get("request_event_fired_at") if previously else None
-            )
+            already_fired_at = previously.get("request_event_fired_at") if previously else None
             already_fired_for_same_transition = (
                 already_fired_at is not None
                 and previously is not None
@@ -974,10 +1135,9 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
             request_count += 1
             _LOGGER.info(
-                "Booking request received: txn=%s transition=%s customer=%s listing=%s",
+                "Booking request received: txn=%s transition=%s listing=%s",
                 txn_id,
                 last_transition,
-                booking.get("customer_display_name") or booking.get("customer_first_name", ""),
                 booking.get("listing_title", ""),
             )
 
@@ -996,13 +1156,17 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             }
             self.hass.bus.async_fire(EVENT_BOOKING_REQUEST_RECEIVED, event_data)
 
-            new_state = dict(previously) if previously else {
-                "last_transition": last_transition,
-                "last_transitioned_at": last_transitioned_at,
-                "message_sent": False,
-                "message_sent_at": None,
-                "event_fired_at": None,
-            }
+            new_state = (
+                dict(previously)
+                if previously
+                else {
+                    "last_transition": last_transition,
+                    "last_transitioned_at": last_transitioned_at,
+                    "message_sent": False,
+                    "message_sent_at": None,
+                    "event_fired_at": None,
+                }
+            )
             new_state["last_transition"] = last_transition
             new_state["last_transitioned_at"] = last_transitioned_at
             new_state["request_event_fired_at"] = now.isoformat()
@@ -1035,7 +1199,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             _LOGGER.warning("No data available to fire events")
             return 0
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         fired_count = 0
 
         for booking in self.data:
@@ -1097,7 +1261,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
     async def mark_message_sent(self, transaction_id: str) -> None:
         """Mark a transaction as having had a message sent."""
         transaction_states = self._stored_data.get("transaction_states", {})
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         if transaction_id in transaction_states:
             transaction_states[transaction_id]["message_sent"] = True
@@ -1116,28 +1280,99 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         await self._store.async_save(self._stored_data)
         _LOGGER.debug("Marked message_sent=True for transaction %s", transaction_id)
 
+    async def clear_customer_history(self, scope: str = "all") -> None:
+        """Delete the archive or actively scrub its sensitive fields."""
+        self.customer_history = clear_customer_history(self.customer_history, scope)
+        self._stored_data["customer_history"] = self.customer_history
+        await self._store.async_save(self._stored_data)
+
+    async def clear_message_history(self) -> None:
+        """Delete all retained message content and reset the backfill cursor."""
+        self.message_history = {}
+        self._stored_data["message_history"] = {}
+        self._stored_data["message_sync_cursor"] = 0
+        await self._store.async_save(self._stored_data)
+
+    async def sync_message_history(
+        self,
+        batch_size: int = 10,
+        *,
+        bookings: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Incrementally sync a rotating bounded batch of conversations."""
+        source = bookings if bookings is not None else (self.data or [])
+        transaction_ids = [
+            str(item["transaction_id"]) for item in source if item.get("transaction_id")
+        ]
+        if not transaction_ids:
+            return {"processed": 0, "new_messages": 0, "remaining": 0, "complete": True}
+
+        cursor = int(self._stored_data.get("message_sync_cursor", 0) or 0) % len(transaction_ids)
+        selected = transaction_ids[cursor : cursor + batch_size]
+        if len(selected) < batch_size:
+            selected += transaction_ids[: batch_size - len(selected)]
+        selected = selected[: min(batch_size, len(transaction_ids))]
+
+        archive = self.message_history
+        added = 0
+        completed = 0
+        for txn_id in selected:
+            known_ids = frozenset(dict((archive.get(txn_id) or {}).get("messages") or {}).keys())
+            try:
+                messages, complete = await self.api.get_messages_incremental(
+                    txn_id, known_ids, max_pages=3
+                )
+            except (APIError, AuthenticationError):
+                continue
+            before = len(known_ids)
+            archive, _changed = merge_messages(archive, txn_id, messages)
+            added += max(0, len((archive.get(txn_id) or {}).get("messages", {})) - before)
+            completed += int(complete)
+
+        archive = prune_message_archive(archive, self.history_retention)
+        self.message_history = archive
+        self._stored_data["message_history"] = archive
+        self._stored_data["message_sync_cursor"] = (cursor + len(selected)) % len(transaction_ids)
+        await self._store.async_save(self._stored_data)
+        return {
+            "processed": len(selected),
+            "new_messages": added,
+            "conversations_at_boundary": completed,
+            "remaining": max(0, len(transaction_ids) - len(selected)),
+            "complete": len(selected) >= len(transaction_ids),
+        }
+
     async def _run_auto_review(
-        self, bookings: list[dict[str, Any]], now: datetime
-    ) -> None:
+        self,
+        bookings: list[dict[str, Any]],
+        now: datetime,
+        force_ids: set[str] | None = None,
+    ) -> dict[str, int]:
         """Attempt provider reviews on eligible past bookings (opt-in).
 
         Selection is pure (see ``auto_review.select_auto_reviews``). For each
         selected transaction we attempt ``leave_review`` and let the API decide
         whether the review window is open: success is recorded in the store so it
-        never re-posts, and failures are counted for a bounded retry on later
+        never re-posts, and failures use persisted exponential backoff on later
         polls. State persistence is what makes this survive restarts.
         """
         transaction_states = self._stored_data.get("transaction_states", {})
         to_review = select_auto_reviews(
             bookings,
             transaction_states,
-            enabled=self.auto_review,
+            enabled=self.auto_review or force_ids is not None,
             now=now,
+            ignore_backoff=force_ids is not None,
         )
+        if force_ids is not None:
+            to_review = [txn_id for txn_id in to_review if txn_id in force_ids]
         if not to_review:
-            return
+            self._update_auto_review_repair()
+            return {"attempted": 0, "posted": 0, "failed": 0}
 
         changed = False
+        posted = 0
+        failed = 0
         for txn_id in to_review:
             state = transaction_states.setdefault(txn_id, {})
             try:
@@ -1147,10 +1382,12 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                     content=self.auto_review_content,
                 )
             except (APIError, AuthenticationError) as err:
-                # Window likely not open yet (or transient). Count the attempt
-                # and retry on a later poll until it succeeds or ages out.
-                state["auto_review_attempts"] = state.get("auto_review_attempts", 0) + 1
+                # Window likely not open yet (or transient). Persist the retry
+                # schedule so frequent coordinator polls cannot exhaust the
+                # booking's opportunity before Sharetribe opens the transition.
+                state.update(auto_review_failure_state(state, now, type(err).__name__))
                 changed = True
+                failed += 1
                 _LOGGER.debug(
                     "Auto-review attempt %d failed for %s: %s",
                     state["auto_review_attempts"],
@@ -1162,7 +1399,10 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             state["auto_reviewed"] = True
             state["auto_reviewed_at"] = now.isoformat()
             state["auto_review_transition"] = result.get("transition")
+            state.pop("auto_review_next_attempt_at", None)
+            state.pop("auto_review_last_failure", None)
             changed = True
+            posted += 1
             self.hass.bus.async_fire(
                 EVENT_REVIEW_LEFT,
                 {
@@ -1173,13 +1413,70 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                     "timestamp": now.isoformat(),
                 },
             )
-            _LOGGER.info(
-                "Auto-review posted for %s (%s)", txn_id, result.get("transition")
-            )
+            _LOGGER.info("Auto-review posted for %s (%s)", txn_id, result.get("transition"))
 
         if changed:
             self._stored_data["transaction_states"] = transaction_states
             await self._store.async_save(self._stored_data)
+        self._update_auto_review_repair()
+        return {"attempted": len(to_review), "posted": posted, "failed": failed}
+
+    def auto_review_dry_run(self, transaction_id: str | None = None) -> dict[str, Any]:
+        """Return eligible transaction ids without mutating Sharetribe or storage."""
+        now = datetime.now(UTC)
+        candidates = select_auto_reviews(
+            self.data or [],
+            self._stored_data.get("transaction_states", {}),
+            enabled=True,
+            now=now,
+            ignore_backoff=True,
+        )
+        if transaction_id:
+            candidates = [item for item in candidates if item == transaction_id]
+        due_now = select_auto_reviews(
+            self.data or [],
+            self._stored_data.get("transaction_states", {}),
+            enabled=True,
+            now=now,
+        )
+        return {
+            "enabled": self.auto_review,
+            "candidate_count": len(candidates),
+            "candidate_transaction_ids": candidates,
+            "due_now_count": len([item for item in candidates if item in due_now]),
+            "checked_at": now.isoformat(),
+        }
+
+    async def retry_auto_reviews_now(self, transaction_id: str | None = None) -> dict[str, Any]:
+        """Immediately retry one or all currently reviewable transactions."""
+        dry_run = self.auto_review_dry_run(transaction_id)
+        force_ids = set(dry_run["candidate_transaction_ids"])
+        result = await self._run_auto_review(self.data or [], datetime.now(UTC), force_ids)
+        return {**result, "requested": len(force_ids)}
+
+    def _update_auto_review_repair(self) -> None:
+        """Raise one actionable Repair after repeated sanitized failures."""
+        if not self.auto_review:
+            ir.async_delete_issue(self.hass, DOMAIN, f"auto_review_{self.entry.entry_id}")
+            return
+        failing = sum(
+            1
+            for state in self._stored_data.get("transaction_states", {}).values()
+            if not state.get("auto_reviewed") and state.get("auto_review_attempts", 0) >= 3
+        )
+        issue_id = f"auto_review_{self.entry.entry_id}"
+        if not failing:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="auto_review_failed",
+            translation_placeholders={"count": str(failing)},
+        )
 
     def has_message_been_sent(self, transaction_id: str) -> bool:
         """Check if a message has already been sent for a transaction."""
@@ -1192,15 +1489,17 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
     @property
     def auto_review_status(self) -> dict[str, Any]:
         """At-a-glance auto-review status for the diagnostic sensor."""
-        return summarize_auto_reviews(
+        status = summarize_auto_reviews(
             self._stored_data.get("transaction_states", {}),
             enabled=self.auto_review,
             rating=self.auto_review_rating,
         )
+        dry_run = self.auto_review_dry_run()
+        status["candidate_count"] = dry_run["candidate_count"]
+        status["due_now_count"] = dry_run["due_now_count"]
+        return status
 
-    async def _refresh_awaiting_replies(
-        self, bookings: list[dict[str, Any]]
-    ) -> None:
+    async def _refresh_awaiting_replies(self, bookings: list[dict[str, Any]]) -> None:
         """Flag active bookings whose latest message awaits a host reply.
 
         Bounded to ``MAX_MESSAGE_SCAN`` active (upcoming/in_progress) bookings to
@@ -1221,7 +1520,23 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         for booking in active:
             txn_id = booking["transaction_id"]
             try:
-                messages = await self.api.get_messages(txn_id)
+                if self.archive_messages:
+                    known = frozenset(
+                        dict((self.message_history.get(txn_id) or {}).get("messages") or {}).keys()
+                    )
+                    new_messages, _complete = await self.api.get_messages_incremental(
+                        txn_id, known, max_pages=2
+                    )
+                    self.message_history, _changed = merge_messages(
+                        self.message_history, txn_id, new_messages
+                    )
+                    messages = list(
+                        dict(
+                            (self.message_history.get(txn_id) or {}).get("messages") or {}
+                        ).values()
+                    )
+                else:
+                    messages = await self.api.get_messages(txn_id)
             except (APIError, AuthenticationError) as err:
                 _LOGGER.debug("Message fetch failed for %s: %s", txn_id, err)
                 continue
@@ -1238,6 +1553,12 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
         self.awaiting_reply_txns = awaiting
         self.latest_message = latest
+        if self.archive_messages:
+            self.message_history = prune_message_archive(
+                self.message_history, self.history_retention
+            )
+            self._stored_data["message_history"] = self.message_history
+            await self._store.async_save(self._stored_data)
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Get diagnostic information for debugging."""
@@ -1248,9 +1569,15 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             "pages_fetched": self.pages_fetched,
             "newest_transaction_id": self.newest_transaction_id,
             "confirmed_new_count": self.confirmed_new_count,
-            "transaction_states_count": len(
-                self._stored_data.get("transaction_states", {})
+            "customer_history_count": len(self.customer_history),
+            "message_history_conversation_count": len(self.message_history),
+            "message_history_message_count": sum(
+                len(record.get("messages", {})) for record in self.message_history.values()
             ),
+            "history_retention": self.history_retention,
+            "archive_messages": self.archive_messages,
+            "auto_review": self.auto_review_status,
+            "transaction_states_count": len(self._stored_data.get("transaction_states", {})),
             "update_interval_seconds": self.update_interval.total_seconds()
             if self.update_interval
             else None,

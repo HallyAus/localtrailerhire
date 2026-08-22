@@ -7,11 +7,10 @@ relationships.sender.data.id.uuid.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
 from lth_api import SharetribeFlexAPI
 
 
@@ -39,6 +38,7 @@ def test_parse_messages_extracts_sender_and_fields():
     msgs = SharetribeFlexAPI.parse_messages(payload)
     assert len(msgs) == 1
     m = msgs[0]
+    assert m["id"] == "m1"
     assert m["content"] == "hi"
     assert m["sender_id"] == "U_cust"
     assert m["created_at"] == "2026-06-21T05:19:04.767Z"
@@ -123,7 +123,7 @@ class _Session:
 def _api(responses: list[_Resp]) -> SharetribeFlexAPI:
     api = SharetribeFlexAPI(session=_Session(responses), client_id="cid")
     api._access_token = "tok"
-    api._token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    api._token_expiry = datetime.now(UTC) + timedelta(hours=1)
     return api
 
 
@@ -139,3 +139,19 @@ async def test_get_messages_queries_transaction_and_parses():
     params = [p for _u, p in api._session.calls if p and "transactionId" in p]
     assert params and params[0]["transactionId"] == "TXN1"
     assert params[0].get("include") == "sender"
+
+
+@pytest.mark.asyncio
+async def test_incremental_messages_stop_at_known_newest_first_boundary():
+    page = {
+        "data": [
+            _msg("new-2", "U_cust"),
+            _msg("new-1", "U_prov"),
+            _msg("known", "U_cust"),
+            _msg("old", "U_prov"),
+        ]
+    }
+    api = _api([_Resp(page)])
+    messages, complete = await api.get_messages_incremental("TXN1", frozenset({"known"}))
+    assert complete is True
+    assert [message["id"] for message in messages] == ["new-2", "new-1"]

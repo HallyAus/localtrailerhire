@@ -7,7 +7,7 @@ dashboard rather than digging through sensor attributes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
@@ -28,15 +28,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the calendar entity for an entry."""
-    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id][
-        "coordinator"
-    ]
+    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     async_add_entities([LocalTrailerHireCalendar(coordinator, entry)])
 
 
-class LocalTrailerHireCalendar(
-    CoordinatorEntity[LocalTrailerHireCoordinator], CalendarEntity
-):
+class LocalTrailerHireCalendar(CoordinatorEntity[LocalTrailerHireCoordinator], CalendarEntity):
     """Calendar entity that surfaces bookings as calendar events."""
 
     _attr_has_entity_name = True
@@ -75,7 +71,7 @@ class LocalTrailerHireCalendar(
         start handles both cases: an in-progress booking has a past start
         and naturally sorts before any future one.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         candidates: list[CalendarEvent] = []
         for booking in self.coordinator.data or []:
             event = self._booking_to_event(booking)
@@ -118,9 +114,7 @@ class LocalTrailerHireCalendar(
 
         listing = booking.get("listing_title") or "Trailer"
         customer = (
-            booking.get("customer_display_name")
-            or booking.get("customer_first_name")
-            or "Customer"
+            booking.get("customer_display_name") or booking.get("customer_first_name") or "Customer"
         )
 
         description_parts: list[str] = []

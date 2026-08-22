@@ -163,3 +163,120 @@ leave_review:
       selector:
         config_entry:
           integration: localtrailerhire
+
+export_customer_history:
+  name: Export Customer History
+  description: Return the retained customer and booking archive as JSON or CSV. Sensitive fields are included only when their option is enabled.
+  fields:
+    format:
+      name: Format
+      required: false
+      default: json
+      selector:
+        select:
+          options: [json, csv]
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+clear_customer_history:
+  name: Clear Customer History
+  description: Permanently delete the customer archive or scrub only sensitive values.
+  fields:
+    scope:
+      name: Scope
+      required: false
+      default: all
+      selector:
+        select:
+          options: [sensitive, all]
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+sync_message_history:
+  name: Sync Message History
+  description: Incrementally backfill a bounded batch of conversations and return progress.
+  fields:
+    batch_size:
+      name: Batch Size
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 50
+          step: 1
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+export_message_history:
+  name: Export Message History
+  description: Return the opt-in message archive as JSON or CSV.
+  fields:
+    format:
+      name: Format
+      required: false
+      default: json
+      selector:
+        select:
+          options: [json, csv]
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+clear_message_history:
+  name: Clear Message History
+  description: Permanently delete all locally archived message content and reset backfill progress.
+  fields:
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+auto_review_dry_run:
+  name: Auto-Review Dry Run
+  description: Show reviewable transaction IDs and retry status without posting a review.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      required: false
+      selector:
+        text:
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire
+
+auto_review_retry_now:
+  name: Retry Auto-Review Now
+  description: Immediately retry one or all currently reviewable transactions, bypassing the saved backoff.
+  fields:
+    transaction_id:
+      name: Transaction ID
+      required: false
+      selector:
+        text:
+    config_entry_id:
+      name: Config Entry
+      required: false
+      selector:
+        config_entry:
+          integration: localtrailerhire

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -24,6 +24,7 @@ from .const import (
     MESSAGE_SEND_URL,
     MESSAGES_QUERY_URL,
     OWN_LISTINGS_URL,
+    PROVIDER_REVIEW_DONE_TRANSITIONS,
     RETRYABLE_STATUSES,
     REVIEWS_URL,
     TOKEN_REFRESH_BUFFER,
@@ -53,8 +54,8 @@ def _parse_retry_after(value: str | None, default: int = 60) -> int:
                 dt = None
             if dt is not None:
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                seconds = int((dt - datetime.now(timezone.utc)).total_seconds())
+                    dt = dt.replace(tzinfo=UTC)
+                seconds = int((dt - datetime.now(UTC)).total_seconds())
     return max(0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
@@ -147,9 +148,7 @@ class SharetribeFlexAPI:
                     # Update authorization header
                     if "headers" in kwargs:
                         kwargs["headers"]["Authorization"] = f"Bearer {self._access_token}"
-                    return await self._request_with_retry(
-                        method, url, retry_auth=False, **kwargs
-                    )
+                    return await self._request_with_retry(method, url, retry_auth=False, **kwargs)
 
                 if status_code in RETRYABLE_STATUSES:
                     # Rate limited (429) / transient 5xx: wait and retry (bounded)
@@ -160,9 +159,7 @@ class SharetribeFlexAPI:
                             url,
                         )
                         raise APIError("Rate limited (exceeded retry budget)")
-                    retry_after = _parse_retry_after(
-                        response.headers.get("Retry-After")
-                    )
+                    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                     _LOGGER.warning("Rate limited, waiting %d seconds", retry_after)
                     await asyncio.sleep(retry_after)
                     return await self._request_with_retry(
@@ -174,26 +171,19 @@ class SharetribeFlexAPI:
                     )
 
                 if status_code >= 400:
-                    text = await response.text()
-                    # Log error details (sanitized - no tokens)
                     _LOGGER.error(
-                        "API request failed: status=%d, content_type=%s, url=%s, "
-                        "response_preview=%s",
+                        "API request failed: status=%d, content_type=%s, url=%s",
                         status_code,
                         content_type,
                         url,
-                        text[:500] if text else "(empty)",
                     )
                     raise APIError(f"Request failed with status {status_code}")
 
                 # Verify we got JSON response
                 if "application/json" not in content_type.lower():
-                    text = await response.text()
                     _LOGGER.error(
-                        "Unexpected content type (expected JSON): content_type=%s, "
-                        "response_preview=%s",
+                        "Unexpected content type (expected JSON): content_type=%s",
                         content_type,
-                        text[:200] if text else "(empty)",
                     )
                     raise APIError(f"Expected JSON but got {content_type}")
 
@@ -241,9 +231,7 @@ class SharetribeFlexAPI:
         }
 
         try:
-            async with self._session.post(
-                AUTH_TOKEN_URL, data=data, headers=headers
-            ) as response:
+            async with self._session.post(AUTH_TOKEN_URL, data=data, headers=headers) as response:
                 content_type = response.headers.get("Content-Type", "unknown")
                 _LOGGER.debug(
                     "Auth response: status=%d, content_type=%s",
@@ -252,11 +240,9 @@ class SharetribeFlexAPI:
                 )
 
                 if response.status != 200:
-                    text = await response.text()
                     _LOGGER.error(
-                        "Password grant failed: status=%d, response=%s",
+                        "Password grant failed: status=%d",
                         response.status,
-                        text[:200] if text else "(empty)",
                     )
                     raise AuthenticationError("Password authentication failed")
 
@@ -283,9 +269,7 @@ class SharetribeFlexAPI:
         }
 
         try:
-            async with self._session.post(
-                AUTH_TOKEN_URL, data=data, headers=headers
-            ) as response:
+            async with self._session.post(AUTH_TOKEN_URL, data=data, headers=headers) as response:
                 content_type = response.headers.get("Content-Type", "unknown")
                 _LOGGER.debug(
                     "Token refresh response: status=%d, content_type=%s",
@@ -294,11 +278,9 @@ class SharetribeFlexAPI:
                 )
 
                 if response.status != 200:
-                    text = await response.text()
                     _LOGGER.error(
-                        "Token refresh failed: status=%d, response=%s",
+                        "Token refresh failed: status=%d",
                         response.status,
-                        text[:200] if text else "(empty)",
                     )
                     raise AuthenticationError("Token refresh failed")
 
@@ -307,9 +289,7 @@ class SharetribeFlexAPI:
 
         except aiohttp.ClientError as err:
             # Connectivity problem, not a credential problem.
-            raise APIError(
-                f"Network error during refresh: {type(err).__name__}"
-            ) from err
+            raise APIError(f"Network error during refresh: {type(err).__name__}") from err
 
     def _process_token_response(self, result: dict[str, Any]) -> None:
         """Process token response and store credentials."""
@@ -317,7 +297,7 @@ class SharetribeFlexAPI:
         self._refresh_token = result.get("refresh_token", self._refresh_token)
 
         expires_in = result.get("expires_in", 600)
-        self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        self._token_expiry = datetime.now(UTC) + timedelta(seconds=expires_in)
 
         _LOGGER.debug("Token obtained, expires in %d seconds", expires_in)
 
@@ -331,7 +311,7 @@ class SharetribeFlexAPI:
             # Check if token is about to expire
             if self._token_expiry:
                 buffer = timedelta(seconds=TOKEN_REFRESH_BUFFER)
-                if datetime.now(timezone.utc) + buffer >= self._token_expiry:
+                if datetime.now(UTC) + buffer >= self._token_expiry:
                     _LOGGER.debug("Token expiring soon, refreshing")
                     await self._authenticate_internal()
 
@@ -376,9 +356,7 @@ class SharetribeFlexAPI:
 
         # Log filter status
         if last_transitions:
-            _LOGGER.debug(
-                "Using transition filter: %s", last_transitions
-            )
+            _LOGGER.debug("Using transition filter: %s", last_transitions)
         else:
             _LOGGER.debug(
                 "No transition filter - fetching ALL transactions, "
@@ -391,7 +369,7 @@ class SharetribeFlexAPI:
 
         # Initialize diagnostics
         diagnostics: dict[str, Any] = {
-            "request_time": datetime.now(timezone.utc).isoformat(),
+            "request_time": datetime.now(UTC).isoformat(),
             "pages": [],
             "total_transactions_fetched": 0,
             "total_upcoming": 0,
@@ -639,9 +617,7 @@ class SharetribeFlexAPI:
                             MAX_RATE_LIMIT_RETRIES,
                         )
                         raise APIError("Rate limited (exceeded retry budget)")
-                    retry_after = _parse_retry_after(
-                        response.headers.get("Retry-After")
-                    )
+                    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                     _LOGGER.warning(
                         "Rate limited on message send, waiting %d seconds",
                         retry_after,
@@ -654,21 +630,13 @@ class SharetribeFlexAPI:
                         rate_limit_attempts=rate_limit_attempts + 1,
                     )
 
-                # Get response text for logging (sanitized)
-                response_text = await response.text()
-
                 # Handle errors
                 if status_code >= 400:
-                    # Sanitize response for logging (remove any tokens/secrets)
-                    safe_preview = response_text[:500] if response_text else "(empty)"
                     _LOGGER.error(
-                        "Message send failed: status=%d, response=%s",
+                        "Message send failed: status=%d",
                         status_code,
-                        safe_preview,
                     )
-                    raise APIError(
-                        f"Message send failed with status {status_code}"
-                    )
+                    raise APIError(f"Message send failed with status {status_code}")
 
                 # Success!
                 _LOGGER.debug(
@@ -721,9 +689,7 @@ class SharetribeFlexAPI:
             "params": params or {},
         }
 
-        return await self._post_transition_with_retry(
-            body=body, headers=headers, retry_auth=True
-        )
+        return await self._post_transition_with_retry(body=body, headers=headers, retry_auth=True)
 
     async def leave_review(
         self,
@@ -770,9 +736,7 @@ class SharetribeFlexAPI:
         last_err: APIError | None = None
         for trans in candidates:
             try:
-                result = await self.transition_transaction(
-                    transaction_id, trans, params=params
-                )
+                result = await self.transition_transaction(transaction_id, trans, params=params)
                 return {**result, "transition": trans}
             except APIError as err:
                 last_err = err
@@ -795,9 +759,7 @@ class SharetribeFlexAPI:
     ) -> dict[str, Any]:
         """POST to /transactions/transition with one 401 retry."""
         try:
-            async with self._session.post(
-                TRANSITION_URL, json=body, headers=headers
-            ) as response:
+            async with self._session.post(TRANSITION_URL, json=body, headers=headers) as response:
                 status_code = response.status
 
                 if status_code == 401 and retry_auth:
@@ -815,12 +777,8 @@ class SharetribeFlexAPI:
                             MAX_RATE_LIMIT_RETRIES,
                         )
                         raise APIError("Rate limited (exceeded retry budget)")
-                    retry_after = _parse_retry_after(
-                        response.headers.get("Retry-After")
-                    )
-                    _LOGGER.warning(
-                        "Rate limited on transition, waiting %ds", retry_after
-                    )
+                    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                    _LOGGER.warning("Rate limited on transition, waiting %ds", retry_after)
                     await asyncio.sleep(retry_after)
                     return await self._post_transition_with_retry(
                         body=body,
@@ -830,16 +788,13 @@ class SharetribeFlexAPI:
                     )
 
                 if status_code >= 400:
-                    text = await response.text()
                     _LOGGER.error(
-                        "Transition failed: status=%d, transition=%s, response=%s",
+                        "Transition failed: status=%d, transition=%s",
                         status_code,
                         body.get("transition"),
-                        text[:500] if text else "(empty)",
                     )
                     raise APIError(
-                        f"Transition {body.get('transition')} failed "
-                        f"(status {status_code})"
+                        f"Transition {body.get('transition')} failed (status {status_code})"
                     )
 
                 _LOGGER.info(
@@ -914,9 +869,7 @@ class SharetribeFlexAPI:
             "Authorization": f"Bearer {self._access_token}",
             "Accept": "application/json",
         }
-        result, _meta = await self._request_with_retry(
-            "GET", CURRENT_USER_URL, headers=headers
-        )
+        result, _meta = await self._request_with_retry("GET", CURRENT_USER_URL, headers=headers)
         parsed = self.parse_current_user(result)
         if parsed.get("id"):
             self._current_user_id = parsed["id"]
@@ -956,7 +909,18 @@ class SharetribeFlexAPI:
                 "response_rate": s.get("responseRate"),
                 "num_bookings": s.get("numBookings"),
                 "num_hires": s.get("numHires"),
+                "num_transactions": s.get("numTransactions"),
+                "num_booking_requests": s.get("numBookingRequests"),
+                "num_accepted_bookings": s.get("numAcceptedBookings"),
+                "num_declined_bookings": s.get("numDeclinedBookings"),
+                "num_expired_bookings": s.get("numExpiredBookings"),
+                "num_cancelled_bookings": s.get("numCancelledBookings"),
+                "num_aborted_bookings": s.get("numAbortedBookings"),
                 "missed_earnings": s.get("missedEarnings"),
+                "missed_earnings_declined": s.get("missedEarningsDueToDeclinedBookings"),
+                "missed_earnings_expired": s.get("missedEarningsDueToExpiredBookings"),
+                "missed_earnings_aborted": s.get("missedEarningsDueToAbortedBookings"),
+                "updated_at": s.get("updatedAt"),
             }
 
         return {
@@ -1015,14 +979,18 @@ class SharetribeFlexAPI:
         parsed: list[dict[str, Any]] = []
         for item in payload.get("data", []):
             attrs = item.get("attributes", {}) or {}
+            relationships = item.get("relationships", {}) or {}
             parsed.append(
                 {
+                    "id": SharetribeFlexAPI._extract_uuid(item.get("id")),
                     "rating": attrs.get("rating"),
                     "content": attrs.get("content"),
                     "type": attrs.get("type"),
                     "state": attrs.get("state"),
                     "created_at": attrs.get("createdAt"),
                     "deleted": attrs.get("deleted", False),
+                    "author_id": SharetribeFlexAPI._related_id(relationships, "author"),
+                    "subject_id": SharetribeFlexAPI._related_id(relationships, "subject"),
                 }
             )
         return parsed
@@ -1052,6 +1020,22 @@ class SharetribeFlexAPI:
         Returns simplified dicts ``{content, created_at, sender_id, deleted}``
         (verified shape: ``messages/query?transactionId&include=sender``).
         """
+        messages, _complete = await self.get_messages_incremental(transaction_id)
+        return messages
+
+    async def get_messages_incremental(
+        self,
+        transaction_id: str,
+        known_ids: frozenset[str] = frozenset(),
+        *,
+        max_pages: int = MAX_PAGES,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Fetch newest messages until a known id or the history end is reached.
+
+        Sharetribe returns newest messages first and offers no created-at filter,
+        so stopping at a previously archived stable id is the cheapest reliable
+        incremental sync. ``complete`` indicates that boundary was reached.
+        """
         if not transaction_id:
             raise APIError("transaction_id is required")
 
@@ -1077,16 +1061,19 @@ class SharetribeFlexAPI:
                 "GET", MESSAGES_QUERY_URL, headers=headers, params=params
             )
             data = result.get("data", [])
-            messages.extend(self.parse_messages(result))
+            parsed = self.parse_messages(result)
+            boundary = next(
+                (index for index, item in enumerate(parsed) if item.get("id") in known_ids),
+                None,
+            )
+            messages.extend(parsed if boundary is None else parsed[:boundary])
 
-            if len(data) < DEFAULT_PER_PAGE:
-                break
-            if page >= MAX_PAGES:
+            if boundary is not None or len(data) < DEFAULT_PER_PAGE:
+                return messages, True
+            if page >= max_pages:
                 _LOGGER.warning("Hit MAX_PAGES while fetching messages")
-                break
+                return messages, False
             page += 1
-
-        return messages
 
     @classmethod
     def parse_messages(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1097,6 +1084,7 @@ class SharetribeFlexAPI:
             relationships = item.get("relationships", {}) or {}
             parsed.append(
                 {
+                    "id": cls._extract_uuid(item.get("id")),
                     "content": attrs.get("content"),
                     "created_at": attrs.get("createdAt"),
                     "deleted": attrs.get("deleted", False),
@@ -1116,9 +1104,7 @@ class SharetribeFlexAPI:
         return max(live, key=lambda m: m.get("created_at") or "")
 
     @classmethod
-    def awaiting_reply(
-        cls, messages: list[dict[str, Any]], provider_id: str | None
-    ) -> bool:
+    def awaiting_reply(cls, messages: list[dict[str, Any]], provider_id: str | None) -> bool:
         """True if the latest non-deleted message was sent by someone other than
         the provider (i.e. the host has not replied yet).
 
@@ -1130,9 +1116,7 @@ class SharetribeFlexAPI:
         return latest.get("sender_id") != provider_id
 
     @classmethod
-    def _build_images_map(
-        cls, included: list[dict[str, Any]]
-    ) -> dict[str, str]:
+    def _build_images_map(cls, included: list[dict[str, Any]]) -> dict[str, str]:
         """Build ``{image_id: best_url}`` from the JSON-API included array."""
         images: dict[str, str] = {}
         for item in included:
@@ -1141,9 +1125,7 @@ class SharetribeFlexAPI:
             image_id = cls._extract_uuid(item.get("id"))
             if not image_id:
                 continue
-            variants = (
-                item.get("attributes", {}).get("variants", {}) or {}
-            )
+            variants = item.get("attributes", {}).get("variants", {}) or {}
             # Prefer a reasonably sized variant; fall back to anything.
             for preferred in ("landscape-crop2x", "landscape-crop", "default"):
                 variant = variants.get(preferred)
@@ -1182,9 +1164,12 @@ class SharetribeFlexAPI:
         return {
             "id": listing_id,
             "title": attrs.get("title"),
+            "description": attrs.get("description"),
             "state": attrs.get("state"),
             "deleted": attrs.get("deleted", False),
+            "created_at": attrs.get("createdAt"),
             "price_aud": cls._format_money(attrs.get("price")),
+            "price_currency": (attrs.get("price") or {}).get("currency"),
             "image_url": image_url,
             "public_url": (
                 f"{MARKETPLACE_WEB_URL}/l/{cls._listing_slug(attrs.get('title'))}/{listing_id}"
@@ -1232,10 +1217,7 @@ class SharetribeFlexAPI:
             item_type = item.get("type")
             # Handle both {uuid: "..."} and direct string ID formats
             item_id_obj = item.get("id", {})
-            if isinstance(item_id_obj, dict):
-                item_id = item_id_obj.get("uuid")
-            else:
-                item_id = item_id_obj
+            item_id = item_id_obj.get("uuid") if isinstance(item_id_obj, dict) else item_id_obj
 
             if not item_id:
                 continue
@@ -1260,7 +1242,7 @@ class SharetribeFlexAPI:
         )
 
         all_bookings: list[dict[str, Any]] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         sample_count = 0
 
         # Store now_utc in diagnostics for verification
@@ -1323,9 +1305,7 @@ class SharetribeFlexAPI:
                 continue
 
         # Sort by booking start date (unknown dates go to end)
-        all_bookings.sort(
-            key=lambda x: x.get("booking_start") or "9999-12-31T00:00:00Z"
-        )
+        all_bookings.sort(key=lambda x: x.get("booking_start") or "9999-12-31T00:00:00Z")
 
         return all_bookings
 
@@ -1371,9 +1351,7 @@ class SharetribeFlexAPI:
                 f"booking_start ({start_dt.isoformat()}) >= now ({now.isoformat()})"
             )
         if end_dt < now:
-            return "past", (
-                f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})"
-            )
+            return "past", (f"booking_end ({end_dt.isoformat()}) < now ({now.isoformat()})")
         return "in_progress", (
             f"booking_start ({start_dt.isoformat()}) <= now ({now.isoformat()}) "
             f"< booking_end ({end_dt.isoformat()})"
@@ -1407,6 +1385,15 @@ class SharetribeFlexAPI:
         attrs = txn.get("attributes", {})
         relationships = txn.get("relationships", {})
 
+        transition_history = {
+            item.get("transition")
+            for item in (attrs.get("transitions") or [])
+            if isinstance(item, dict) and item.get("transition")
+        }
+        provider_review_done = bool(
+            transition_history.intersection(PROVIDER_REVIEW_DONE_TRANSITIONS)
+        )
+
         debug_info["last_transition"] = attrs.get("lastTransition")
         debug_info["state"] = attrs.get("state")
 
@@ -1418,7 +1405,8 @@ class SharetribeFlexAPI:
         booking = bookings_map.get(booking_id, {}) if booking_id else {}
         booking_attrs = booking.get("attributes", {})
         customer = customers_map.get(customer_id, {}) if customer_id else {}
-        customer_profile = customer.get("attributes", {}).get("profile", {})
+        customer_attrs = customer.get("attributes", {}) or {}
+        customer_profile = customer_attrs.get("profile", {}) or {}
         listing = listings_map.get(listing_id, {}) if listing_id else {}
         listing_attrs = listing.get("attributes", {})
 
@@ -1429,13 +1417,9 @@ class SharetribeFlexAPI:
         end_dt = parse_iso_datetime(booking_end)
 
         if booking_start and start_dt is None:
-            _LOGGER.warning(
-                "Failed to parse booking_start for transaction %s", txn_id
-            )
+            _LOGGER.warning("Failed to parse booking_start for transaction %s", txn_id)
         if booking_end and end_dt is None:
-            _LOGGER.warning(
-                "Failed to parse booking_end for transaction %s", txn_id
-            )
+            _LOGGER.warning("Failed to parse booking_end for transaction %s", txn_id)
 
         category, reason = self._categorize(start_dt, end_dt, now)
 
@@ -1455,33 +1439,63 @@ class SharetribeFlexAPI:
         # Customer/financial extraction
         protected_data = attrs.get("protectedData", {}) or {}
         customer_obj = self._build_customer_object(
-            customer_profile, protected_data, include_sensitive
+            customer_profile,
+            protected_data,
+            include_sensitive,
+            customer_id=customer_id,
+            customer_attrs=customer_attrs,
         )
-        raw_phone = (
-            protected_data.get("customerPhoneNumber")
-            or protected_data.get("phoneNumber")
-        )
+        raw_phone = protected_data.get("customerPhoneNumber") or protected_data.get("phoneNumber")
 
         booking_data = {
             "transaction_id": txn_id,
+            "customer_id": customer_id,
+            "booking_id": booking_id,
             "booking_start": booking_start,
             "booking_end": booking_end,
+            "booking_display_start": booking_attrs.get("displayStart"),
+            "booking_display_end": booking_attrs.get("displayEnd"),
+            "booking_seats": booking_attrs.get("seats"),
             # Legacy flat fields (deprecated, use customer object)
-            "customer_first_name": customer_profile.get("firstName"),
-            "customer_last_name": customer_profile.get("lastName"),
+            "customer_first_name": customer_obj.get("first_name"),
+            "customer_last_name": customer_obj.get("last_name"),
             "customer_display_name": customer_profile.get("displayName"),
             "customer_phone": raw_phone if include_sensitive else self._mask_phone(raw_phone),
             "pickup_address": protected_data.get("pickupAddress")
-            or protected_data.get("address"),
+            or protected_data.get("address")
+            or protected_data.get("residentialAddress"),
             "pickup_suburb": protected_data.get("suburb"),
             "customer": customer_obj,
             "payout_total_aud": self._format_money(attrs.get("payoutTotal")),
+            "payout_currency": (attrs.get("payoutTotal") or {}).get("currency"),
             "payin_total_aud": self._format_money(attrs.get("payinTotal")),
+            "payin_currency": (attrs.get("payinTotal") or {}).get("currency"),
+            "line_items": self._extract_line_items(attrs.get("lineItems")),
+            "transaction_created_at": attrs.get("createdAt"),
+            "transaction_state": attrs.get("state"),
+            "process_name": attrs.get("processName"),
+            "process_version": attrs.get("processVersion"),
+            "transition_count": len(attrs.get("transitions") or []),
             "last_transition": attrs.get("lastTransition"),
+            # ``lastTransition`` alone is insufficient: when the provider
+            # reviews first and the customer reviews second, the provider's
+            # review is only visible in the full transition history.
+            "provider_review_done": provider_review_done,
             "state": booking_attrs.get("state"),
             "last_transitioned_at": attrs.get("lastTransitionedAt"),
             "listing_title": listing_attrs.get("title"),
             "listing_id": listing_id,
+            "booking_details": {
+                "booking_type": protected_data.get("bookingType"),
+                "liability_excess": protected_data.get("liabilityExcess"),
+                "promo_code": protected_data.get("promoCode") or protected_data.get("discountCode"),
+                "how_heard": protected_data.get("howDidYouHearAboutUs"),
+                "signup_method": protected_data.get("signupMethod"),
+                "referrer_name": (
+                    protected_data.get("referrerName") if include_sensitive else None
+                ),
+                "terms_accepted": protected_data.get("termsAccept"),
+            },
         }
 
         return booking_data, debug_info
@@ -1491,6 +1505,9 @@ class SharetribeFlexAPI:
         profile: dict[str, Any],
         protected_data: dict[str, Any],
         include_sensitive: bool,
+        *,
+        customer_id: str | None = None,
+        customer_attrs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build structured customer object with optional sensitive data.
 
@@ -1502,25 +1519,43 @@ class SharetribeFlexAPI:
         Returns:
             Structured customer dict with nested licence and address.
         """
-        first_name = profile.get("firstName")
-        last_name = profile.get("lastName")
+        customer_attrs = customer_attrs or {}
+        public_data = profile.get("publicData", {}) or {}
+        review_stats = public_data.get("customerReviewStats", {}) or {}
+        first_name = profile.get("firstName") or protected_data.get("firstName")
+        last_name = profile.get("lastName") or protected_data.get("lastName")
 
         # Phone number - mask if sensitive data disabled
-        raw_phone = (
-            protected_data.get("customerPhoneNumber")
-            or protected_data.get("phoneNumber")
-        )
+        raw_phone = protected_data.get("customerPhoneNumber") or protected_data.get("phoneNumber")
         phone = raw_phone if include_sensitive else self._mask_phone(raw_phone)
 
         customer: dict[str, Any] = {
+            "id": customer_id,
             "first_name": first_name,
             "last_name": last_name,
+            "display_name": profile.get("displayName"),
+            "abbreviated_name": profile.get("abbreviatedName"),
             "phone": phone,
+            "account_created_at": customer_attrs.get("createdAt"),
+            "account_state": customer_attrs.get("state"),
+            "account_deleted": customer_attrs.get("deleted", False),
+            "account_banned": customer_attrs.get("banned", False),
+            "num_hires": public_data.get("numCustomerHires"),
+            "review_stats": {
+                "average_rating": review_stats.get("avgCustomerReviewRating"),
+                "review_count": review_stats.get("numCustomerReviews"),
+                "updated_at": review_stats.get("updatedAt"),
+            },
         }
 
         # Address - building + residential address
         building = protected_data.get("building")
-        residential_address = protected_data.get("residentialAddress")
+        residential_address = (
+            protected_data.get("residentialAddress")
+            or protected_data.get("pickupAddress")
+            or protected_data.get("address")
+        )
+        suburb = protected_data.get("suburb")
 
         if residential_address or building:
             full_address = residential_address or ""
@@ -1531,6 +1566,7 @@ class SharetribeFlexAPI:
 
             customer["address"] = {
                 "building": building,
+                "suburb": suburb,
                 "full": full_address if full_address else None,
             }
 
@@ -1550,6 +1586,31 @@ class SharetribeFlexAPI:
                 }
 
         return customer
+
+    @classmethod
+    def _extract_line_items(cls, line_items: Any) -> list[dict[str, Any]]:
+        """Return stable financial fields from Sharetribe transaction line items."""
+        if not isinstance(line_items, list):
+            return []
+
+        extracted: list[dict[str, Any]] = []
+        for item in line_items:
+            if not isinstance(item, dict):
+                continue
+            unit_price = item.get("unitPrice") or {}
+            line_total = item.get("lineTotal") or {}
+            extracted.append(
+                {
+                    "code": item.get("code"),
+                    "unit_price": cls._format_money(unit_price),
+                    "line_total": cls._format_money(line_total),
+                    "currency": line_total.get("currency") or unit_price.get("currency"),
+                    "quantity": item.get("quantity"),
+                    "reversal": item.get("reversal", False),
+                    "include_for": item.get("includeFor", []),
+                }
+            )
+        return extracted
 
     @staticmethod
     def _mask_phone(phone: str | None) -> str | None:
@@ -1572,9 +1633,7 @@ class SharetribeFlexAPI:
         return masked
 
     @staticmethod
-    def _format_licence_expiry(
-        expiry_obj: dict[str, Any] | None
-    ) -> tuple[str | None, str | None]:
+    def _format_licence_expiry(expiry_obj: dict[str, Any] | None) -> tuple[str | None, str | None]:
         """Format licence expiry date object to ISO and display strings.
 
         Args:

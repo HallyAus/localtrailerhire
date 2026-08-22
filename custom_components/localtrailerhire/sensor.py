@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -18,7 +18,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import LocalTrailerHireCoordinator
-from .util import parse_iso_datetime
 from .const import (
     ATTR_BOOKING_COUNT,
     ATTR_BOOKINGS,
@@ -33,6 +32,9 @@ from .const import (
     DOMAIN,
     PAYOUT_TRANSITIONS,
     REQUEST_TRANSITIONS,
+    SENSOR_ACCEPTANCE_RATE,
+    SENSOR_AUTO_REVIEW_STATUS,
+    SENSOR_AWAITING_REPLIES,
     SENSOR_BOOKINGS_TOTAL_PAYIN,
     SENSOR_EARNINGS_EARNED,
     SENSOR_EARNINGS_SCHEDULED,
@@ -42,9 +44,6 @@ from .const import (
     SENSOR_NEXT_END,
     SENSOR_NEXT_PAYOUT,
     SENSOR_NEXT_START,
-    SENSOR_ACCEPTANCE_RATE,
-    SENSOR_AUTO_REVIEW_STATUS,
-    SENSOR_AWAITING_REPLIES,
     SENSOR_PROFILE,
     SENSOR_RATING_AVERAGE,
     SENSOR_RESPONSE_RATE,
@@ -53,6 +52,7 @@ from .const import (
     SENSOR_UNKNOWN_DATES_COUNT,
     SENSOR_UPCOMING_COUNT,
 )
+from .util import parse_iso_datetime
 
 
 async def async_setup_entry(
@@ -61,9 +61,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Local Trailer Hire sensors."""
-    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id][
-        "coordinator"
-    ]
+    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     entities: list[SensorEntity] = [
         # Count sensors
@@ -109,12 +107,13 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class LocalTrailerHireBaseSensor(
-    CoordinatorEntity[LocalTrailerHireCoordinator], SensorEntity
-):
+class LocalTrailerHireBaseSensor(CoordinatorEntity[LocalTrailerHireCoordinator], SensorEntity):
     """Base class for Local Trailer Hire sensors."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset(
+        {ATTR_BOOKINGS, ATTR_LAST_UPDATE, "recent_reviews", "recent_bookings"}
+    )
 
     def __init__(
         self,
@@ -179,9 +178,7 @@ class LocalTrailerHireBaseSensor(
     @property
     def _include_booking_lists(self) -> bool:
         """Check if booking lists should be included in attributes."""
-        return self._entry.options.get(
-            CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
-        )
+        return self._entry.options.get(CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS)
 
     @property
     def _public_reviews(self) -> list[dict[str, Any]]:
@@ -189,9 +186,7 @@ class LocalTrailerHireBaseSensor(
         return [
             r
             for r in self.coordinator.reviews
-            if r.get("type") == "ofProvider"
-            and r.get("state") == "public"
-            and not r.get("deleted")
+            if r.get("type") == "ofProvider" and r.get("state") == "public" and not r.get("deleted")
         ]
 
 
@@ -206,9 +201,7 @@ class RatingAverageSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:star"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_RATING_AVERAGE, "Rating")
 
@@ -226,12 +219,10 @@ class RatingAverageSensor(LocalTrailerHireBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return review count and the most recent reviews."""
         public = self._public_reviews
-        recent = sorted(
-            public, key=lambda r: r.get("created_at") or "", reverse=True
-        )[:5]
+        recent = sorted(public, key=lambda r: r.get("created_at") or "", reverse=True)[:5]
         return {
             "review_count": len(public),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             "recent_reviews": [
                 {
                     "rating": r.get("rating"),
@@ -249,9 +240,7 @@ class ReviewCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:comment-text-multiple"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_REVIEW_COUNT, "Review Count")
 
@@ -276,9 +265,7 @@ class ProfileSensor(LocalTrailerHireBaseSensor):
 
     _attr_icon = "mdi:account-badge"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, SENSOR_PROFILE, "Profile")
 
     @property
@@ -296,7 +283,7 @@ class ProfileSensor(LocalTrailerHireBaseSensor):
             "payouts_enabled": profile.get("payouts_enabled"),
             "charges_enabled": profile.get("charges_enabled"),
             "stats": profile.get("stats", {}),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
 
 
@@ -307,12 +294,8 @@ class AcceptanceRateSensor(LocalTrailerHireBaseSensor):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
-        super().__init__(
-            coordinator, entry, SENSOR_ACCEPTANCE_RATE, "Acceptance Rate"
-        )
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, SENSOR_ACCEPTANCE_RATE, "Acceptance Rate")
 
     @property
     def native_value(self) -> int | None:
@@ -330,9 +313,7 @@ class ResponseRateSensor(LocalTrailerHireBaseSensor):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, SENSOR_RESPONSE_RATE, "Response Rate")
 
     @property
@@ -350,12 +331,8 @@ class AwaitingRepliesSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:message-alert"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
-        super().__init__(
-            coordinator, entry, SENSOR_AWAITING_REPLIES, "Awaiting Replies"
-        )
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, SENSOR_AWAITING_REPLIES, "Awaiting Replies")
 
     @property
     def native_value(self) -> int:
@@ -370,7 +347,7 @@ class AwaitingRepliesSensor(LocalTrailerHireBaseSensor):
         return {
             "transaction_ids": self.coordinator.awaiting_reply_txns,
             "latest_message": self.coordinator.latest_message,
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
 
 
@@ -380,9 +357,7 @@ class AutoReviewStatusSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:robot"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, SENSOR_AUTO_REVIEW_STATUS, "Auto-Review")
 
     @property
@@ -410,9 +385,7 @@ class UpcomingBookingsCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:calendar-clock"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_UPCOMING_COUNT, "Upcoming Bookings")
 
@@ -431,7 +404,7 @@ class UpcomingBookingsCountSensor(LocalTrailerHireBaseSensor):
         """Return sensor attributes."""
         attrs: dict[str, Any] = {
             ATTR_BOOKING_COUNT: len(self._upcoming_bookings),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
 
         # Include bookings list if enabled
@@ -447,13 +420,9 @@ class InProgressBookingsCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:calendar-check"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(
-            coordinator, entry, SENSOR_IN_PROGRESS_COUNT, "In Progress Bookings"
-        )
+        super().__init__(coordinator, entry, SENSOR_IN_PROGRESS_COUNT, "In Progress Bookings")
 
     @property
     def native_value(self) -> int:
@@ -470,7 +439,7 @@ class InProgressBookingsCountSensor(LocalTrailerHireBaseSensor):
         """Return sensor attributes."""
         attrs: dict[str, Any] = {
             ATTR_BOOKING_COUNT: len(self._in_progress_bookings),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
 
         # Include bookings list if enabled
@@ -486,13 +455,9 @@ class UnknownDatesCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:calendar-question"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(
-            coordinator, entry, SENSOR_UNKNOWN_DATES_COUNT, "Unknown Dates Bookings"
-        )
+        super().__init__(coordinator, entry, SENSOR_UNKNOWN_DATES_COUNT, "Unknown Dates Bookings")
 
     @property
     def native_value(self) -> int:
@@ -509,7 +474,7 @@ class UnknownDatesCountSensor(LocalTrailerHireBaseSensor):
         """Return sensor attributes."""
         attrs: dict[str, Any] = {
             ATTR_BOOKING_COUNT: len(self._unknown_dates_bookings),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
 
         # Include bookings list if enabled
@@ -525,9 +490,7 @@ class TotalBookingsCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:calendar-multiple"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_TOTAL_COUNT, "Total Bookings")
 
@@ -546,7 +509,7 @@ class TotalBookingsCountSensor(LocalTrailerHireBaseSensor):
         """Return sensor attributes with breakdown."""
         attrs: dict[str, Any] = {
             ATTR_BOOKING_COUNT: len(self._all_bookings),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             ATTR_BREAKDOWN: {
                 "upcoming": len(self._upcoming_bookings),
                 "in_progress": len(self._in_progress_bookings),
@@ -571,6 +534,9 @@ class TotalBookingsCountSensor(LocalTrailerHireBaseSensor):
                     "pages_fetched": len(diag.get("pages", [])),
                 }
 
+        # Complete history is available through export_customer_history. It is
+        # deliberately never attached to this count sensor.
+
         return attrs
 
 
@@ -585,9 +551,7 @@ class NextBookingStartSensor(LocalTrailerHireBaseSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:calendar-start"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_NEXT_START, "Next Booking Start")
 
@@ -639,9 +603,7 @@ class NextBookingEndSensor(LocalTrailerHireBaseSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:calendar-end"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_NEXT_END, "Next Booking End")
 
@@ -676,13 +638,9 @@ class NextBookingCustomerSensor(LocalTrailerHireBaseSensor):
 
     _attr_icon = "mdi:account"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(
-            coordinator, entry, SENSOR_NEXT_CUSTOMER, "Next Booking Customer"
-        )
+        super().__init__(coordinator, entry, SENSOR_NEXT_CUSTOMER, "Next Booking Customer")
 
     @property
     def native_value(self) -> str | None:
@@ -746,9 +704,7 @@ class NextBookingPayoutSensor(LocalTrailerHireBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:cash"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_NEXT_PAYOUT, "Next Booking Payout")
 
@@ -802,9 +758,7 @@ class EarningsTotalSensor(LocalTrailerHireBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:cash-multiple"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_EARNINGS_TOTAL, "Earnings Total")
 
@@ -827,7 +781,7 @@ class EarningsTotalSensor(LocalTrailerHireBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return breakdown of earnings."""
         return {
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             "bookings_with_payout": sum(
                 1 for b in self._all_bookings if b.get("payout_total_aud") is not None
             ),
@@ -842,9 +796,7 @@ class EarningsEarnedSensor(LocalTrailerHireBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:cash-check"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, SENSOR_EARNINGS_EARNED, "Earnings Earned")
 
@@ -891,7 +843,7 @@ class EarningsEarnedSensor(LocalTrailerHireBaseSensor):
                 payout_transition_count += 1
 
         return {
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             "past_bookings_count": past_count,
             "payout_transition_count": payout_transition_count,
         }
@@ -905,13 +857,9 @@ class EarningsScheduledSensor(LocalTrailerHireBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:cash-clock"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(
-            coordinator, entry, SENSOR_EARNINGS_SCHEDULED, "Earnings Scheduled"
-        )
+        super().__init__(coordinator, entry, SENSOR_EARNINGS_SCHEDULED, "Earnings Scheduled")
 
     @property
     def native_value(self) -> float:
@@ -948,7 +896,7 @@ class EarningsScheduledSensor(LocalTrailerHireBaseSensor):
         )
 
         return {
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             "upcoming_payout": round(upcoming_payout, 2),
             "in_progress_payout": round(in_progress_payout, 2),
             "upcoming_count": len(self._upcoming_bookings),
@@ -964,13 +912,9 @@ class BookingsTotalPayinSensor(LocalTrailerHireBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:cash-plus"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
-        super().__init__(
-            coordinator, entry, SENSOR_BOOKINGS_TOTAL_PAYIN, "Bookings Total Payin"
-        )
+        super().__init__(coordinator, entry, SENSOR_BOOKINGS_TOTAL_PAYIN, "Bookings Total Payin")
 
     @property
     def native_value(self) -> float:
@@ -991,7 +935,7 @@ class BookingsTotalPayinSensor(LocalTrailerHireBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return breakdown."""
         return {
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
             "bookings_with_payin": sum(
                 1 for b in self._all_bookings if b.get("payin_total_aud") is not None
             ),
@@ -1009,17 +953,12 @@ class PendingRequestCountSensor(LocalTrailerHireBaseSensor):
     _attr_icon = "mdi:bell-alert-outline"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "pending_requests_count", "Pending Requests")
 
     @property
     def _pending(self) -> list[dict[str, Any]]:
-        return [
-            b for b in self._all_bookings
-            if b.get("last_transition") in REQUEST_TRANSITIONS
-        ]
+        return [b for b in self._all_bookings if b.get("last_transition") in REQUEST_TRANSITIONS]
 
     @property
     def native_value(self) -> int:
@@ -1033,7 +972,7 @@ class PendingRequestCountSensor(LocalTrailerHireBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {
             ATTR_BOOKING_COUNT: len(self._pending),
-            ATTR_LAST_UPDATE: datetime.now(timezone.utc).isoformat(),
+            ATTR_LAST_UPDATE: datetime.now(UTC).isoformat(),
         }
         if self._include_booking_lists:
             attrs[ATTR_BOOKINGS] = self._pending
@@ -1089,14 +1028,13 @@ class EarningsLast30DaysSensor(_EarningsWindowSensor):
 
     _attr_icon = "mdi:cash-clock"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "earnings_last_30_days_aud", "Earnings Last 30 Days")
 
     def _window(self) -> tuple[datetime, datetime]:
         from datetime import timedelta as _td  # local import to avoid module-level shuffle
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         return now - _td(days=30), now + _td(days=1)
 
 
@@ -1105,15 +1043,14 @@ class EarningsMonthToDateSensor(_EarningsWindowSensor):
 
     _attr_icon = "mdi:cash-clock"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "earnings_month_to_date_aud", "Earnings Month To Date")
 
     def _window(self) -> tuple[datetime, datetime]:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         from datetime import timedelta as _td
+
         return start, now + _td(days=1)
 
 
@@ -1122,17 +1059,14 @@ class EarningsYearToDateSensor(_EarningsWindowSensor):
 
     _attr_icon = "mdi:cash-clock"
 
-    def __init__(
-        self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: LocalTrailerHireCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "earnings_year_to_date_aud", "Earnings Year To Date")
 
     def _window(self) -> tuple[datetime, datetime]:
-        now = datetime.now(timezone.utc)
-        start = now.replace(
-            month=1, day=1, hour=0, minute=0, second=0, microsecond=0
-        )
+        now = datetime.now(UTC)
+        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         from datetime import timedelta as _td
+
         return start, now + _td(days=1)
 
 
@@ -1141,9 +1075,7 @@ class EarningsYearToDateSensor(_EarningsWindowSensor):
 # =============================================================================
 
 
-class _BaseListingSensor(
-    CoordinatorEntity[LocalTrailerHireCoordinator], SensorEntity
-):
+class _BaseListingSensor(CoordinatorEntity[LocalTrailerHireCoordinator], SensorEntity):
     """Common base for per-listing sensors."""
 
     _attr_has_entity_name = True

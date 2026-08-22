@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from lth_api import APIError, SharetribeFlexAPI
 
 
@@ -81,13 +80,9 @@ async def test_leave_review_falls_back_to_review_2_when_review_1_rejected():
 
 @pytest.mark.asyncio
 async def test_leave_review_raises_when_both_transitions_fail():
-    fake = _FakeAPI(
-        [APIError("review-1 fail"), APIError("review-2 fail")]
-    )
+    fake = _FakeAPI([APIError("review-1 fail"), APIError("review-2 fail")])
     with pytest.raises(APIError, match="review-2 fail"):
-        await _run_leave_review(
-            fake, transaction_id="abc", rating=5, content="hi"
-        )
+        await _run_leave_review(fake, transaction_id="abc", rating=5, content="hi")
     assert len(fake.calls) == 2
 
 
@@ -101,9 +96,7 @@ async def test_leave_review_honours_explicit_transition():
         content="hi",
         transition="transition/review-2-by-provider",
     )
-    assert [c["transition"] for c in fake.calls] == [
-        "transition/review-2-by-provider"
-    ]
+    assert [c["transition"] for c in fake.calls] == ["transition/review-2-by-provider"]
 
 
 @pytest.mark.asyncio
@@ -111,9 +104,7 @@ async def test_leave_review_honours_explicit_transition():
 async def test_leave_review_rejects_out_of_range_rating(bad_rating: int):
     fake = _FakeAPI([])
     with pytest.raises(APIError, match="rating"):
-        await _run_leave_review(
-            fake, transaction_id="abc", rating=bad_rating, content="hi"
-        )
+        await _run_leave_review(fake, transaction_id="abc", rating=bad_rating, content="hi")
     assert fake.calls == []
 
 
@@ -121,7 +112,5 @@ async def test_leave_review_rejects_out_of_range_rating(bad_rating: int):
 async def test_leave_review_rejects_empty_content():
     fake = _FakeAPI([])
     with pytest.raises(APIError, match="content"):
-        await _run_leave_review(
-            fake, transaction_id="abc", rating=5, content="   "
-        )
+        await _run_leave_review(fake, transaction_id="abc", rating=5, content="   ")
     assert fake.calls == []

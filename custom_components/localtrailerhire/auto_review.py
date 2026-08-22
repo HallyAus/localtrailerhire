@@ -11,7 +11,7 @@ Sharetribe transitions are template-specific and not stable across processes
 review now" state, we attempt the review on any *past* booking within a bounded
 window and let the transition endpoint be the source of truth: ``leave_review``
 tries ``review-1`` then ``review-2`` and raises ``APIError`` if neither is
-allowed yet. A failed attempt is simply retried on the next poll until the
+allowed yet. Failed attempts use a persisted exponential backoff until the
 window opens or the booking ages out. State is persisted, so this survives
 Home Assistant restarts (unlike the old delay-based example automation).
 """
@@ -29,9 +29,46 @@ from .util import parse_iso_datetime
 # review period has clearly expired.
 AUTO_REVIEW_MAX_AGE: timedelta = timedelta(days=14)
 
-# Give up after this many failed attempts on one booking (belt-and-braces with
-# the age cap, in case the API keeps rejecting).
-MAX_AUTO_REVIEW_ATTEMPTS: int = 8
+# A transaction may become date-past before its Sharetribe process opens the
+# review transition. Back off failures instead of exhausting a small retry
+# count during that gap. The cap still gives several attempts per day while
+# keeping API traffic bounded across the full review window.
+AUTO_REVIEW_RETRY_BASE: timedelta = timedelta(minutes=30)
+AUTO_REVIEW_RETRY_MAX: timedelta = timedelta(hours=12)
+
+
+def auto_review_retry_delay(attempts: int) -> timedelta:
+    """Return the delay after ``attempts`` consecutive failed review posts."""
+    exponent = min(max(0, attempts - 1), 5)
+    delay = AUTO_REVIEW_RETRY_BASE * (2**exponent)
+    return min(delay, AUTO_REVIEW_RETRY_MAX)
+
+
+def auto_review_retry_due(state: dict[str, Any], now: datetime) -> bool:
+    """Return whether a persisted failed review may be attempted again."""
+    retry_at = parse_iso_datetime(state.get("auto_review_next_attempt_at"))
+    # Missing/invalid timestamps include v1.3/v1.4 states that exhausted the
+    # old eight-attempt cap. Treat those as due so upgrades recover them.
+    return retry_at is None or now >= retry_at
+
+
+def auto_review_failure_state(
+    state: dict[str, Any], now: datetime, failure_reason: str | None = None
+) -> dict[str, Any]:
+    """Return persisted retry metadata after one failed review attempt."""
+    try:
+        previous_attempts = int(state.get("auto_review_attempts", 0))
+    except (TypeError, ValueError):
+        previous_attempts = 0
+    attempts = max(0, previous_attempts) + 1
+    update = {
+        "auto_review_attempts": attempts,
+        "auto_review_last_attempt_at": now.isoformat(),
+        "auto_review_next_attempt_at": (now + auto_review_retry_delay(attempts)).isoformat(),
+    }
+    if failure_reason:
+        update["auto_review_last_failure"] = failure_reason
+    return update
 
 
 def is_reviewable(
@@ -50,7 +87,9 @@ def is_reviewable(
         return False
     # Skip bookings the provider has already reviewed or whose review window has
     # lapsed — attempting those just wastes API calls.
-    if booking.get("last_transition") in PROVIDER_REVIEW_DONE_TRANSITIONS:
+    if booking.get("provider_review_done") or (
+        booking.get("last_transition") in PROVIDER_REVIEW_DONE_TRANSITIONS
+    ):
         return False
     end = parse_iso_datetime(booking.get("booking_end"))
     if end is None:
@@ -65,8 +104,8 @@ def select_auto_reviews(
     enabled: bool,
     now: datetime,
     reviewed_txn_ids: frozenset[str] = frozenset(),
-    max_attempts: int = MAX_AUTO_REVIEW_ATTEMPTS,
     max_age: timedelta = AUTO_REVIEW_MAX_AGE,
+    ignore_backoff: bool = False,
 ) -> list[str]:
     """Return transaction ids that should have an auto-review attempted now.
 
@@ -74,7 +113,7 @@ def select_auto_reviews(
     - ``enabled`` is True (the opt-in option);
     - it has a transaction id and is not already known-reviewed
       (``reviewed_txn_ids`` from the API, or ``auto_reviewed`` in the store);
-    - it has not exhausted ``max_attempts`` prior auto-review attempts;
+    - any persisted retry backoff has elapsed;
     - ``is_reviewable`` (past + within the age window).
     """
     if not enabled:
@@ -89,7 +128,7 @@ def select_auto_reviews(
         state = transaction_states.get(txn_id) or {}
         if state.get("auto_reviewed"):
             continue
-        if state.get("auto_review_attempts", 0) >= max_attempts:
+        if not ignore_backoff and not auto_review_retry_due(state, now):
             continue
         if not is_reviewable(booking, now, max_age=max_age):
             continue
@@ -115,6 +154,9 @@ def summarize_auto_reviews(
     last_txn: str | None = None
     reviewed_total = 0
     pending_retries = 0
+    next_attempt_at: str | None = None
+    last_failure: str | None = None
+    last_failure_at: str | None = None
 
     for txn_id, state in transaction_states.items():
         if state.get("auto_reviewed"):
@@ -125,6 +167,13 @@ def summarize_auto_reviews(
                 last_txn = txn_id
         elif state.get("auto_review_attempts", 0) > 0:
             pending_retries += 1
+            retry_at = state.get("auto_review_next_attempt_at")
+            if retry_at and (next_attempt_at is None or retry_at < next_attempt_at):
+                next_attempt_at = retry_at
+            failed_at = state.get("auto_review_last_attempt_at")
+            if failed_at and (last_failure_at is None or failed_at > last_failure_at):
+                last_failure_at = failed_at
+                last_failure = state.get("auto_review_last_failure")
 
     return {
         "enabled": enabled,
@@ -133,4 +182,7 @@ def summarize_auto_reviews(
         "last_auto_review_at": last_at,
         "last_auto_review_transaction": last_txn,
         "pending_retries": pending_retries,
+        "next_attempt_at": next_attempt_at,
+        "last_failure_at": last_failure_at,
+        "last_failure": last_failure,
     }

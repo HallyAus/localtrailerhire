@@ -42,8 +42,12 @@ api = _load("lth_pkg.api", COMPONENT / "api.py")
 # auto_review.py imports only ``.util`` (registered above), so it loads without
 # Home Assistant just like api.py.
 auto_review = _load("lth_pkg.auto_review", COMPONENT / "auto_review.py")
+customer_history = _load("lth_pkg.customer_history", COMPONENT / "customer_history.py")
+message_archive = _load("lth_pkg.message_archive", COMPONENT / "message_archive.py")
 
 # Re-export under the names the tests use.
 sys.modules["lth_util"] = util
 sys.modules["lth_api"] = api
 sys.modules["lth_auto_review"] = auto_review
+sys.modules["lth_customer_history"] = customer_history
+sys.modules["lth_message_archive"] = message_archive

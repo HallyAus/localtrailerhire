@@ -6,11 +6,10 @@ Payload shapes verified against the live Sharetribe Marketplace API
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
 from lth_api import SharetribeFlexAPI
 
 
@@ -34,6 +33,10 @@ def _review(
             "content": content,
             "createdAt": created,
         },
+        "relationships": {
+            "author": {"data": {"id": {"uuid": "U-author"}}},
+            "subject": {"data": {"id": {"uuid": "U-subject"}}},
+        },
     }
 
 
@@ -44,17 +47,18 @@ def test_parse_reviews_extracts_fields():
     reviews = SharetribeFlexAPI.parse_reviews({"data": [_review(5, content="Great")]})
     assert len(reviews) == 1
     r = reviews[0]
+    assert r["id"] == "rev-5-public-ofProvider"
     assert r["rating"] == 5
     assert r["content"] == "Great"
     assert r["type"] == "ofProvider"
     assert r["state"] == "public"
     assert r["created_at"] == "2026-06-10T19:41:54.462Z"
+    assert r["author_id"] == "U-author"
+    assert r["subject_id"] == "U-subject"
 
 
 def test_average_rating_mean():
-    reviews = SharetribeFlexAPI.parse_reviews(
-        {"data": [_review(5), _review(4), _review(3)]}
-    )
+    reviews = SharetribeFlexAPI.parse_reviews({"data": [_review(5), _review(4), _review(3)]})
     assert SharetribeFlexAPI.average_rating(reviews) == 4.0
 
 
@@ -112,7 +116,7 @@ def _api(responses: list[_Resp]) -> SharetribeFlexAPI:
     api = SharetribeFlexAPI(session=_Session(responses), client_id="cid")
     # Pre-seed a valid token so _ensure_valid_token does no network.
     api._access_token = "tok"
-    api._token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    api._token_expiry = datetime.now(UTC) + timedelta(hours=1)
     return api
 
 
@@ -140,5 +144,7 @@ async def test_get_reviews_queries_subject_id_and_parses():
     assert len(reviews) == 2
     assert SharetribeFlexAPI.average_rating(reviews) == 4.5
     # the reviews request carried subjectId=U1
-    review_calls = [params for url, params in api._session.calls if params and "subjectId" in params]
+    review_calls = [
+        params for url, params in api._session.calls if params and "subjectId" in params
+    ]
     assert review_calls and review_calls[0]["subjectId"] == "U1"

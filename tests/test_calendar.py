@@ -9,7 +9,7 @@ same booking dicts the integration produces.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from lth_util import parse_iso_datetime
 
@@ -23,9 +23,7 @@ def _booking_to_event(booking: dict) -> tuple[datetime, datetime, str, str | Non
 
     listing = booking.get("listing_title") or "Trailer"
     customer = (
-        booking.get("customer_display_name")
-        or booking.get("customer_first_name")
-        or "Customer"
+        booking.get("customer_display_name") or booking.get("customer_first_name") or "Customer"
     )
 
     description_parts: list[str] = []
@@ -101,5 +99,5 @@ def test_dates_are_utc_aware():
     )
     assert result is not None
     start, end, _, _ = result
-    assert start == datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
-    assert end == datetime(2024, 1, 17, 10, 0, tzinfo=timezone.utc)
+    assert start == datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
+    assert end == datetime(2024, 1, 17, 10, 0, tzinfo=UTC)

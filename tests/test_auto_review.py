@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from lth_auto_review import (
-    MAX_AUTO_REVIEW_ATTEMPTS,
+    AUTO_REVIEW_RETRY_MAX,
+    auto_review_failure_state,
+    auto_review_retry_delay,
+    auto_review_retry_due,
     is_reviewable,
     select_auto_reviews,
     summarize_auto_reviews,
 )
 
-NOW = datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 22, 12, 0, tzinfo=UTC)
 
 
 def _booking(txn_id: str, category: str, end_offset_days: float) -> dict:
@@ -59,6 +62,48 @@ def test_not_reviewable_when_review_window_expired():
     assert is_reviewable(booking, NOW) is False
 
 
+def test_not_reviewable_when_aggregate_review_period_expired():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/expire-review-period"
+    assert is_reviewable(booking, NOW) is False
+
+
+def test_not_reviewable_when_customer_reviewed_second():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/review-2-by-customer"
+    assert is_reviewable(booking, NOW) is False
+
+
+def test_customer_first_still_allows_provider_review():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/review-1-by-customer"
+    assert is_reviewable(booking, NOW) is True
+
+
+def test_force_selection_can_bypass_retry_backoff():
+    booking = _booking("t", "past", -1)
+    states = {"t": {"auto_review_next_attempt_at": (NOW + timedelta(days=1)).isoformat()}}
+    assert select_auto_reviews([booking], states, enabled=True, now=NOW) == []
+    assert select_auto_reviews([booking], states, enabled=True, now=NOW, ignore_backoff=True) == [
+        "t"
+    ]
+
+
+def test_failure_summary_contains_only_sanitized_reason_and_next_attempt():
+    state = auto_review_failure_state({}, NOW, "APIError")
+    summary = summarize_auto_reviews({"t": state}, enabled=True, rating=5)
+    assert summary["last_failure"] == "APIError"
+    assert summary["last_failure_at"] == NOW.isoformat()
+    assert summary["next_attempt_at"] == state["auto_review_next_attempt_at"]
+
+
+def test_not_reviewable_when_provider_review_is_in_transition_history():
+    booking = _booking("t", "past", -1)
+    booking["last_transition"] = "transition/archive"
+    booking["provider_review_done"] = True
+    assert is_reviewable(booking, NOW) is False
+
+
 # --- select_auto_reviews -----------------------------------------------------
 
 
@@ -86,10 +131,45 @@ def test_skips_already_reviewed_via_api():
     assert result == []
 
 
-def test_skips_when_attempts_exhausted():
+def test_legacy_exhausted_attempt_state_is_recovered_on_upgrade():
     bookings = [_booking("t1", "past", -1)]
-    states = {"t1": {"auto_review_attempts": MAX_AUTO_REVIEW_ATTEMPTS}}
+    states = {"t1": {"auto_review_attempts": 8}}
+    assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == ["t1"]
+
+
+def test_skips_until_persisted_retry_is_due():
+    bookings = [_booking("t1", "past", -1)]
+    states = {
+        "t1": {
+            "auto_review_attempts": 2,
+            "auto_review_next_attempt_at": (NOW + timedelta(minutes=20)).isoformat(),
+        }
+    }
     assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == []
+    assert select_auto_reviews(bookings, states, enabled=True, now=NOW + timedelta(minutes=20)) == [
+        "t1"
+    ]
+
+
+def test_invalid_retry_timestamp_fails_open_for_recovery():
+    assert auto_review_retry_due({"auto_review_next_attempt_at": "not-a-date"}, NOW) is True
+
+
+def test_failure_state_persists_exponential_retry_schedule():
+    first = auto_review_failure_state({}, NOW)
+    assert first["auto_review_attempts"] == 1
+    assert first["auto_review_next_attempt_at"] == (NOW + timedelta(minutes=30)).isoformat()
+
+    second = auto_review_failure_state(first, NOW)
+    assert second["auto_review_attempts"] == 2
+    assert second["auto_review_next_attempt_at"] == (NOW + timedelta(hours=1)).isoformat()
+
+    recovered = auto_review_failure_state({"auto_review_attempts": "bad"}, NOW)
+    assert recovered["auto_review_attempts"] == 1
+
+
+def test_retry_delay_is_capped():
+    assert auto_review_retry_delay(100) == AUTO_REVIEW_RETRY_MAX
 
 
 def test_skips_upcoming_unknown_keeps_past():
@@ -108,9 +188,7 @@ def test_mixed_realistic_selection():
         _booking("upcoming", "upcoming", 5),
     ]
     states = {"past_fresh": {"auto_review_attempts": 1}}  # under the cap
-    assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == [
-        "past_fresh"
-    ]
+    assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == ["past_fresh"]
 
 
 # --- summarize_auto_reviews --------------------------------------------------

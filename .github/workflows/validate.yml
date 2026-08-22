@@ -28,9 +28,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # ``brands`` requires an upstream PR to home-assistant/brands.
-          # ``description`` and ``topics`` are repo settings on github.com
-          # (Settings → top of repo page); the CI cannot fix them. Remove
-          # these ignores once they're set. The HACS action splits this
-          # value on whitespace, so use spaces (not commas).
-          ignore: brands description topics
+          # HACS default inclusion still checks home-assistant/brands even
+          # though Home Assistant 2026.3+ can load our local brand directory.
+          # Remove this final ignore after the upstream brands PR is merged;
+          # HACS requires the action to pass without ignores for inclusion.
+          ignore: brands

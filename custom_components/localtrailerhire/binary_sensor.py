@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.binary_sensor import (
@@ -25,21 +25,18 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the binary sensors for an entry."""
-    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id][
-        "coordinator"
-    ]
+    coordinator: LocalTrailerHireCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     async_add_entities([PendingActionBinarySensor(coordinator, entry)])
 
 
-class PendingActionBinarySensor(
-    CoordinatorEntity[LocalTrailerHireCoordinator], BinarySensorEntity
-):
+class PendingActionBinarySensor(CoordinatorEntity[LocalTrailerHireCoordinator], BinarySensorEntity):
     """On while one or more bookings are awaiting host accept/decline."""
 
     _attr_has_entity_name = True
     _attr_name = "Pending Action"
     _attr_icon = "mdi:bell-alert"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _unrecorded_attributes = frozenset({"transactions", "last_update"})
 
     def __init__(
         self,
@@ -84,13 +81,12 @@ class PendingActionBinarySensor(
                 {
                     "transaction_id": p.get("transaction_id"),
                     "listing_title": p.get("listing_title"),
-                    "customer": p.get("customer_display_name")
-                    or p.get("customer_first_name"),
+                    "customer": p.get("customer_display_name") or p.get("customer_first_name"),
                     "booking_start": p.get("booking_start"),
                     "booking_end": p.get("booking_end"),
                     "payout_total_aud": p.get("payout_total_aud"),
                 }
                 for p in pending
             ],
-            "last_update": datetime.now(timezone.utc).isoformat(),
+            "last_update": datetime.now(UTC).isoformat(),
         }

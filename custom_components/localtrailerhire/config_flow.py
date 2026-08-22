@@ -6,7 +6,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
@@ -14,16 +13,20 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_ARCHIVE_MESSAGES,
     CONF_AUTO_REVIEW,
     CONF_AUTO_REVIEW_CONTENT,
     CONF_AUTO_REVIEW_RATING,
     CONF_CLIENT_ID,
+    CONF_CUSTOMER_HISTORY_RETENTION,
     CONF_INCLUDE_BOOKING_LISTS,
     CONF_INCLUDE_SENSITIVE,
     CONF_LAST_TRANSITIONS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    DEFAULT_ARCHIVE_MESSAGES,
     DEFAULT_AUTO_REVIEW,
+    DEFAULT_CUSTOMER_HISTORY_RETENTION,
     DEFAULT_INCLUDE_BOOKING_LISTS,
     DEFAULT_INCLUDE_SENSITIVE,
     DEFAULT_LAST_TRANSITIONS,
@@ -34,6 +37,7 @@ from .const import (
     LOCALTRAILERHIRE_CLIENT_ID,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
+    RETENTION_OPTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,9 +55,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._password: str | None = None
         self._refresh_token: str | None = None
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -93,9 +95,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         # the real per-provider identity. Falls back to a
                         # refresh-token prefix when password auth wasn't used.
                         unique_id = (
-                            self._username
-                            or (self._refresh_token or "")[:32]
-                            or self._client_id
+                            self._username or (self._refresh_token or "")[:32] or self._client_id
                         )
                         await self.async_set_unique_id(unique_id)
                         self._abort_if_unique_id_configured()
@@ -118,14 +118,10 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-            description_placeholders={
-                "auth_note": "Enter username/password OR a refresh token"
-            },
+            description_placeholders={"auth_note": "Enter username/password OR a refresh token"},
         )
 
-    async def async_step_options(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_options(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the options step."""
         if user_input is not None:
             # Create the config entry
@@ -146,15 +142,19 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 transitions_input = transitions_input.strip()
 
             options = {
-                CONF_SCAN_INTERVAL: user_input.get(
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                ),
+                CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                 CONF_LAST_TRANSITIONS: transitions_input,
                 CONF_INCLUDE_SENSITIVE: user_input.get(
                     CONF_INCLUDE_SENSITIVE, DEFAULT_INCLUDE_SENSITIVE
                 ),
                 CONF_INCLUDE_BOOKING_LISTS: user_input.get(
                     CONF_INCLUDE_BOOKING_LISTS, DEFAULT_INCLUDE_BOOKING_LISTS
+                ),
+                CONF_CUSTOMER_HISTORY_RETENTION: user_input.get(
+                    CONF_CUSTOMER_HISTORY_RETENTION, DEFAULT_CUSTOMER_HISTORY_RETENTION
+                ),
+                CONF_ARCHIVE_MESSAGES: user_input.get(
+                    CONF_ARCHIVE_MESSAGES, DEFAULT_ARCHIVE_MESSAGES
                 ),
             }
 
@@ -165,17 +165,13 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         # Default is empty = no filter, determine upcoming by dates only
-        default_transitions = (
-            ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
-        )
+        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
 
         return self.async_show_form(
             step_id="options",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                    ): vol.All(
+                    vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
                         vol.Coerce(int),
                         vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
                     ),
@@ -191,13 +187,19 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_INCLUDE_BOOKING_LISTS,
                         default=DEFAULT_INCLUDE_BOOKING_LISTS,
                     ): bool,
+                    vol.Optional(
+                        CONF_CUSTOMER_HISTORY_RETENTION,
+                        default=DEFAULT_CUSTOMER_HISTORY_RETENTION,
+                    ): vol.In(RETENTION_OPTIONS),
+                    vol.Optional(
+                        CONF_ARCHIVE_MESSAGES,
+                        default=DEFAULT_ARCHIVE_MESSAGES,
+                    ): bool,
                 }
             ),
         )
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> FlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
         """Handle reauthorization."""
         return await self.async_step_reauth_confirm()
 
@@ -280,13 +282,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
         """
         self._config_entry = config_entry
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle options flow."""
-        _LOGGER.debug(
-            "Options flow init for entry %s", self._config_entry.entry_id
-        )
+        _LOGGER.debug("Options flow init for entry %s", self._config_entry.entry_id)
 
         if user_input is not None:
             # Normalize transitions - strip whitespace safely
@@ -310,9 +308,7 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
             current_interval = DEFAULT_SCAN_INTERVAL
 
         # Default is empty string = no filter
-        default_transitions = (
-            ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
-        )
+        default_transitions = ",".join(DEFAULT_LAST_TRANSITIONS) if DEFAULT_LAST_TRANSITIONS else ""
         current_transitions = options.get(CONF_LAST_TRANSITIONS, default_transitions)
         if not isinstance(current_transitions, str):
             current_transitions = default_transitions
@@ -331,42 +327,41 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
         if not isinstance(current_auto_review, bool):
             current_auto_review = DEFAULT_AUTO_REVIEW
 
-        current_auto_review_rating = options.get(
-            CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING
-        )
+        current_auto_review_rating = options.get(CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING)
         try:
             current_auto_review_rating = int(current_auto_review_rating)
         except (ValueError, TypeError):
             current_auto_review_rating = DEFAULT_REVIEW_RATING
 
-        current_auto_review_content = options.get(
-            CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT
-        )
+        current_auto_review_content = options.get(CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT)
         if not isinstance(current_auto_review_content, str):
             current_auto_review_content = DEFAULT_REVIEW_CONTENT
+
+        current_retention = options.get(
+            CONF_CUSTOMER_HISTORY_RETENTION, DEFAULT_CUSTOMER_HISTORY_RETENTION
+        )
+        if current_retention not in RETENTION_OPTIONS:
+            current_retention = DEFAULT_CUSTOMER_HISTORY_RETENTION
+        current_archive_messages = options.get(CONF_ARCHIVE_MESSAGES, DEFAULT_ARCHIVE_MESSAGES)
+        if not isinstance(current_archive_messages, bool):
+            current_archive_messages = DEFAULT_ARCHIVE_MESSAGES
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_SCAN_INTERVAL, default=current_interval
-                    ): vol.All(
+                    vol.Optional(CONF_SCAN_INTERVAL, default=current_interval): vol.All(
                         vol.Coerce(int),
                         vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
                     ),
+                    vol.Optional(CONF_LAST_TRANSITIONS, default=current_transitions): str,
+                    vol.Optional(CONF_INCLUDE_SENSITIVE, default=current_sensitive): bool,
+                    vol.Optional(CONF_INCLUDE_BOOKING_LISTS, default=current_booking_lists): bool,
                     vol.Optional(
-                        CONF_LAST_TRANSITIONS, default=current_transitions
-                    ): str,
-                    vol.Optional(
-                        CONF_INCLUDE_SENSITIVE, default=current_sensitive
-                    ): bool,
-                    vol.Optional(
-                        CONF_INCLUDE_BOOKING_LISTS, default=current_booking_lists
-                    ): bool,
-                    vol.Optional(
-                        CONF_AUTO_REVIEW, default=current_auto_review
-                    ): bool,
+                        CONF_CUSTOMER_HISTORY_RETENTION, default=current_retention
+                    ): vol.In(RETENTION_OPTIONS),
+                    vol.Optional(CONF_ARCHIVE_MESSAGES, default=current_archive_messages): bool,
+                    vol.Optional(CONF_AUTO_REVIEW, default=current_auto_review): bool,
                     vol.Optional(
                         CONF_AUTO_REVIEW_RATING, default=current_auto_review_rating
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),

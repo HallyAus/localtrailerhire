@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from lth_util import parse_iso_datetime
 
 
 def test_parse_iso_datetime_with_z_suffix():
     result = parse_iso_datetime("2024-01-15T10:30:00.000Z")
-    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
+    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=UTC)
 
 
 def test_parse_iso_datetime_with_offset():
     result = parse_iso_datetime("2024-01-15T10:30:00+00:00")
-    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
+    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=UTC)
 
 
 def test_parse_iso_datetime_naive_assumes_utc():
     result = parse_iso_datetime("2024-01-15T10:30:00")
-    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
+    assert result == datetime(2024, 1, 15, 10, 30, tzinfo=UTC)
 
 
 def test_parse_iso_datetime_preserves_non_utc_offset():

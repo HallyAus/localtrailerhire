@@ -3,7 +3,10 @@
 > **Why this file exists:** a durable, account-independent record of the Sharetribe
 > Flex Marketplace API as actually used by `localtrailerhire.com.au` — so the
 > integration can be understood and rebuilt even if access to Sharetribe's docs,
-> console, or the marketplace is lost.
+> console, or the marketplace is lost. Read-only coverage was re-audited on
+> **2026-08-22**: 135 transactions (2 pages), 432 messages across 118
+> transactions, 45 provider reviews, and 1 own listing. These aggregate counts
+> are recorded for completeness checks; no customer values are retained here.
 >
 > **Trust note:** every endpoint and shape below was **probed live** against the
 > marketplace (read-only, 2026-06-22) — NOT taken on faith from Sharetribe's
@@ -72,7 +75,7 @@ persist the newest one; on `401` refresh once and retry. Revoke:
   "data": { "id": {"uuid":"..."}, "type": "transaction",
             "attributes": {...}, "relationships": {...} },
   "included": [ { "id": {"uuid":"..."}, "type": "booking", "attributes": {...} } ],
-  "meta": { "totalItems": 113, "totalPages": 2, "page": 1, "perPage": 100 }
+  "meta": { "totalItems": 135, "totalPages": 2, "page": 1, "perPage": 100 }
 }
 ```
 - IDs are `{"uuid":"..."}` objects (`_extract_uuid` also tolerates bare strings).
@@ -104,10 +107,15 @@ persist the newest one; on `401` refresh once and retry. Revoke:
 
 Verified request details:
 - `transactions/query?only=sale&per_page=100&page=N&include=booking,customer,listing[,provider]`
-  (optional `lastTransitions=<csv>`). This account: **113** transactions.
+  (optional `lastTransitions=<csv>`). This account: **135** transactions over
+  **2 pages** at the 2026-08-22 audit.
 - `own_listings/query?per_page=100&page=N&include=images`. This account: **1** listing.
 - `reviews/query?subjectId=<currentUserId>&per_page=100&page=N` → reviews about the
-  provider (`type=ofProvider`, `state=public`). **`subjectId` is the only working filter.**
+  provider (`type=ofProvider`, `state=public`). **`subjectId` is the only working
+  filter.** This account: **45** reviews at the 2026-08-22 audit.
+- `messages/query?transactionId=<id>&include=sender&per_page=100&page=N` → message
+  history with sender relationships. The completeness audit found **432**
+  messages across **118** transactions.
 - `transactions/transition` body `{"id","transition","params"}`; review params
   `{"reviewRating":1-5,"reviewContent":"..."}`.
 
@@ -205,6 +213,12 @@ categorises by `start`/`end` vs UTC now (§8).
 numCustomerReviews, updatedAt}}`. (Customer contact details live in the
 transaction `protectedData`, not here.)
 
+Important parser rule: this marketplace's included customer profiles do not
+provide `firstName` / `lastName`; those names must fall back to transaction
+`protectedData.firstName` / `protectedData.lastName`. The 2026-08-22 audit found
+usable protected customer details on 120 transactions and zero profile-level
+first/last names.
+
 ### listing / ownListing
 Common `attributes`: `title`, `description`, `state`
 (`published`/`closed`/`draft`/`pendingApproval`), `deleted`, `price` (money),
@@ -250,8 +264,14 @@ start≤now<end · `past` end<now · `unknown` missing date.
 includes both `confirm-payment-instant-book` and `…-instant-booking`),
 `REQUEST_TRANSITIONS` (request-payment*), `PAYOUT_TRANSITIONS` (earned),
 `PROVIDER_REVIEW_TRANSITIONS` (review-1/2-by-provider), and
-`PROVIDER_REVIEW_DONE_TRANSITIONS` (review-1/2-by-provider +
-expire-provider-review-period → already reviewed / window closed; auto-review skips).
+`PROVIDER_REVIEW_DONE_TRANSITIONS` (provider review transitions plus
+`review-2-by-customer`, review-period/customer/provider expiry, and
+`payout-after-reviews` → already reviewed or terminal; auto-review skips).
+
+Auto-review eligibility also checks the full `transitions[]` history. This is
+required when the provider reviewed first and a later customer/payout transition
+has replaced the provider review as `lastTransition`. Failed attempts use a
+persisted exponential backoff rather than a small fixed attempt budget.
 
 **Provider review** = `transactions/transition` with `review-1-by-provider`
 (or `-2-`) + `params{reviewRating,reviewContent}`. Miss the window →
@@ -267,6 +287,25 @@ expire-provider-review-period → already reviewed / window closed; auto-review 
 - Error envelope: `{"errors":[{"id","status","code","title","details"}]}`. Codes
   seen: `validation-invalid-params`, `validation-missing-key`. The integration
   raises `AuthenticationError` (401) / `APIError` (other), never logs tokens/PII.
+
+### Local retention model
+
+The integration keeps a customer-id keyed archive in its per-config-entry Home
+Assistant storage. Each customer record retains a bounded transaction summary,
+so details remain available if a later API response omits an older transaction.
+Names, public hire/review stats and booking references are retained by default.
+Phone, address, licence and referrer values are retained only when **Include
+sensitive customer details** is enabled; disabling that option scrubs previously
+stored sensitive values on the next successful refresh. Diagnostics report only
+the archive count and redact customer names/contact fields.
+
+Message-body retention is a separate, explicit opt-in. Normal polling reads only
+a bounded set of active bookings (`MAX_MESSAGE_SCAN=25`); the archive additionally
+syncs a small rotating batch and stops when it reaches a stable message ID already
+stored. Because Sharetribe exposes no message timestamp filter, the manual
+`sync_message_history` service advances a persisted, rate-limited cursor in
+batches instead of issuing 100+ requests every ten minutes. Both archives support
+90-day, one-year, or forever retention and JSON/CSV service-response exports.
 
 ---
 

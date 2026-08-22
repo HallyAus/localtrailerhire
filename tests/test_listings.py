@@ -22,9 +22,12 @@ def test_extract_listing_returns_simplified_dict():
     assert result == {
         "id": "list-1",
         "title": "6x4 Cage Trailer",
+        "description": None,
         "state": "published",
         "deleted": False,
+        "created_at": None,
         "price_aud": 55.0,
+        "price_currency": "AUD",
         "image_url": "https://cdn/img1.jpg",
         "public_url": "https://www.localtrailerhire.com.au/l/6x4-cage-trailer/list-1",
     }
@@ -77,9 +80,7 @@ def test_build_images_map_falls_back_to_any_variant():
         {
             "id": {"uuid": "img-y"},
             "type": "image",
-            "attributes": {
-                "variants": {"weird-variant": {"url": "https://cdn/weird.jpg"}}
-            },
+            "attributes": {"variants": {"weird-variant": {"url": "https://cdn/weird.jpg"}}},
         }
     ]
     images_map = SharetribeFlexAPI._build_images_map(included)
