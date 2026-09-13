@@ -1,24 +1,17 @@
 name: Release
 
-# Creates a GitHub release whenever the manifest version is unreleased.
-# Reads the tag from custom_components/localtrailerhire/manifest.json by
-# default, or accepts an override via workflow_dispatch input. Builds a
-# release-asset zip of the integration so HACS can install via release
-# downloads (which are not subject to the 60/hr unauthenticated GitHub API
-# rate limit that the /zipball endpoint hits).
+# Creates a source-archive GitHub release after the validation workflows have
+# passed. This matches hacs.json, which deliberately does not enable zip_release.
+# Keeping releases manual prevents a push from publishing before CI finishes.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Override tag (default: read from manifest.json)"
-        required: false
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      checks: read
       contents: write
     steps:
       - uses: actions/checkout@v4
@@ -28,33 +21,43 @@ jobs:
       - name: Determine tag
         id: tag
         run: |
-          INPUT="${{ github.event.inputs.tag }}"
-          if [ -n "$INPUT" ]; then
-            TAG="$INPUT"
-          else
-            VER=$(grep -oP '"version"\s*:\s*"\K[^"]+' custom_components/localtrailerhire/manifest.json)
-            TAG="v$VER"
-          fi
+          VER=$(python -c 'import json; print(json.load(open("custom_components/localtrailerhire/manifest.json"))["version"])')
+          TAG="v$VER"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved tag: $TAG"
 
-      - name: Check whether tag already exists
-        id: check
+      - name: Require successful validation for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if git rev-parse --verify "refs/tags/${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+          for CHECK in pytest Hassfest HACS; do
+            CONCLUSION=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+              --jq ".check_runs[] | select(.name == \"$CHECK\") | .conclusion" | head -n 1)
+            if [ "$CONCLUSION" != "success" ]; then
+              echo "Required check $CHECK is not successful for $GITHUB_SHA"
+              exit 1
+            fi
+          done
+
+      - name: Check release and tag state
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+            if [ "$TAG_COMMIT" != "$GITHUB_SHA" ]; then
+              echo "Existing tag $TAG points to $TAG_COMMIT, not validated commit $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${{ steps.tag.outputs.tag }} already exists; skipping release."
+            echo "Release $TAG already exists; skipping creation."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Build integration zip
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          cd custom_components/localtrailerhire
-          zip -r "$GITHUB_WORKSPACE/localtrailerhire.zip" .
-          ls -la "$GITHUB_WORKSPACE/localtrailerhire.zip"
-          unzip -l "$GITHUB_WORKSPACE/localtrailerhire.zip" | head -20
 
       - name: Create release
         if: steps.check.outputs.exists == 'false'
@@ -62,13 +65,11 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          target_commitish: main
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
-          files: localtrailerhire.zip
           body: |
             Home Assistant integration for the LocalTrailerHire (Sharetribe Flex)
-            marketplace. Install via HACS — the attached `localtrailerhire.zip`
-            is downloaded directly (no GitHub API rate limit).
+            marketplace. HACS installs this release from GitHub's source archive.
 
             See the README for the full feature list and the sample dashboard
             at `dashboards/local_trailer_hire.yaml`.

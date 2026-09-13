@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.coverage
 
 # Virtual environments
 venv/
@@ -34,3 +35,19 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# --- secret hygiene (added 2026-08-26 portfolio audit) ---
+# Broad rule: every .env variant is ignored, examples are explicitly allowed back.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env*.template
+# Credential caches that are NOT .env files
+*.msal_cache*.bin
+.msal_cache*
+*.pem
+*.p12
+*.pfx
+service-account*.json
+# --- end secret hygiene ---

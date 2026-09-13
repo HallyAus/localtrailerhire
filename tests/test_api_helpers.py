@@ -107,11 +107,7 @@ def test_build_customer_object_uses_transaction_names_and_masks_sensitive_data()
     assert result["phone"] == "0412****78"
     assert result["num_hires"] == 4
     assert result["review_stats"]["average_rating"] == 4.8
-    assert result["address"] == {
-        "building": None,
-        "suburb": "Example suburb",
-        "full": "Example address",
-    }
+    assert "address" not in result
     assert "licence" not in result
 
 
@@ -134,6 +130,26 @@ def test_build_customer_object_includes_licence_only_when_opted_in():
         "state": "NSW",
         "expiry_iso": "2027-03-05",
         "expiry_display": "05/03/2027",
+    }
+
+
+def test_build_customer_object_includes_full_address_only_when_opted_in():
+    api = SharetribeFlexAPI(session=None, client_id="test")
+
+    result = api._build_customer_object(
+        {},
+        {
+            "building": "Unit 2",
+            "residentialAddress": "Example address",
+            "suburb": "Example suburb",
+        },
+        True,
+    )
+
+    assert result["address"] == {
+        "building": "Unit 2",
+        "suburb": "Example suburb",
+        "full": "Unit 2, Example address",
     }
 
 
@@ -341,6 +357,8 @@ def test_extract_booking_data_keeps_customer_and_transaction_reference_fields():
     assert booking["customer_first_name"] == "Customer"
     assert booking["customer_last_name"] == "Example"
     assert booking["customer"]["phone"] == "0412****78"
+    assert "address" not in booking["customer"]
+    assert booking["pickup_address"] is None
     assert booking["booking_display_start"] == "2026-02-01T10:00:00Z"
     assert booking["booking_seats"] == 1
     assert booking["process_name"] == "default-booking"

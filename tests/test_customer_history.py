@@ -85,10 +85,57 @@ def test_repeated_poll_is_idempotent():
     assert second == first
 
 
+def test_merge_repairs_malformed_stored_records_and_skips_bad_bookings() -> None:
+    malformed = {
+        "customer-1": {
+            "customer": ["not", "an", "object"],
+            "transactions": ["not", "an", "object"],
+        },
+        "invalid-customer": None,
+    }
+    repaired, changed = merge_customer_history(
+        malformed,  # type: ignore[arg-type]
+        [None, _booking()],  # type: ignore[list-item]
+        include_sensitive=False,
+    )
+
+    assert changed is True
+    assert "invalid-customer" not in repaired
+    assert repaired["customer-1"]["booking_count"] == 1
+    assert list(repaired["customer-1"]["transactions"]) == ["transaction-1"]
+
+
 def test_retention_prunes_old_transactions_and_empty_customers():
     history, _changed = merge_customer_history({}, [_booking()], include_sensitive=False)
     pruned = prune_customer_history(history, "90_days", datetime(2027, 1, 1, tzinfo=UTC))
     assert pruned == {}
+
+
+def test_prune_and_csv_export_skip_malformed_history_entries() -> None:
+    malformed = {
+        "invalid": None,
+        "customer-1": {
+            "customer": ["not", "an", "object"],
+            "transactions": {
+                "invalid-transaction": None,
+                "transaction-1": {
+                    "booking_end": "2026-08-01T00:00:00Z",
+                    "listing_title": "Example Trailer",
+                },
+            },
+        },
+    }
+
+    pruned = prune_customer_history(
+        malformed,  # type: ignore[arg-type]
+        "90_days",
+        datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    csv_text = export_customer_history(malformed, "csv")  # type: ignore[arg-type]
+
+    assert list(pruned) == ["customer-1"]
+    assert list(pruned["customer-1"]["transactions"]) == ["transaction-1"]
+    assert "customer-1,transaction-1" in csv_text
 
 
 def test_sensitive_clear_and_csv_export():

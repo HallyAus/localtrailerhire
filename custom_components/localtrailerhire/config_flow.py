@@ -133,7 +133,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Only store username/password if provided (for re-auth fallback)
             if self._username:
                 data[CONF_USERNAME] = self._username
-            if self._password:
+            if self._password and not self._refresh_token:
                 data[CONF_PASSWORD] = self._password
 
             # Get transitions - empty string means no filter (fetch all)
@@ -155,6 +155,13 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 CONF_ARCHIVE_MESSAGES: user_input.get(
                     CONF_ARCHIVE_MESSAGES, DEFAULT_ARCHIVE_MESSAGES
+                ),
+                CONF_AUTO_REVIEW: user_input.get(CONF_AUTO_REVIEW, DEFAULT_AUTO_REVIEW),
+                CONF_AUTO_REVIEW_RATING: user_input.get(
+                    CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING
+                ),
+                CONF_AUTO_REVIEW_CONTENT: user_input.get(
+                    CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT
                 ),
             }
 
@@ -195,6 +202,13 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ARCHIVE_MESSAGES,
                         default=DEFAULT_ARCHIVE_MESSAGES,
                     ): bool,
+                    vol.Optional(CONF_AUTO_REVIEW, default=DEFAULT_AUTO_REVIEW): bool,
+                    vol.Optional(CONF_AUTO_REVIEW_RATING, default=DEFAULT_REVIEW_RATING): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=5)
+                    ),
+                    vol.Optional(CONF_AUTO_REVIEW_CONTENT, default=DEFAULT_REVIEW_CONTENT): vol.All(
+                        str, vol.Length(min=1)
+                    ),
                 }
             ),
         )
@@ -234,8 +248,10 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             data[CONF_REFRESH_TOKEN] = new_refresh_token
                         if user_input.get(CONF_USERNAME):
                             data[CONF_USERNAME] = user_input[CONF_USERNAME]
-                        if user_input.get(CONF_PASSWORD):
+                        if user_input.get(CONF_PASSWORD) and not new_refresh_token:
                             data[CONF_PASSWORD] = user_input[CONF_PASSWORD]
+                        elif new_refresh_token:
+                            data.pop(CONF_PASSWORD, None)
 
                         self.hass.config_entries.async_update_entry(entry, data=data)
                         await self.hass.config_entries.async_reload(entry.entry_id)
@@ -265,7 +281,7 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> LocalTrailerHireOptionsFlow:
         """Get the options flow for this handler."""
-        return LocalTrailerHireOptionsFlow(config_entry)
+        return LocalTrailerHireOptionsFlow()
 
 
 class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
@@ -275,16 +291,9 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
     and always returns a valid form even if data is corrupted.
     """
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow.
-
-        No network calls or heavy operations here - just store the reference.
-        """
-        self._config_entry = config_entry
-
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle options flow."""
-        _LOGGER.debug("Options flow init for entry %s", self._config_entry.entry_id)
+        _LOGGER.debug("Options flow init for entry %s", self.config_entry.entry_id)
 
         if user_input is not None:
             # Normalize transitions - strip whitespace safely
@@ -298,7 +307,7 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=data)
 
         # Safely get current values with defaults - NEVER use direct indexing
-        options = self._config_entry.options or {}
+        options = self.config_entry.options or {}
 
         current_interval = options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         # Ensure it's an int
@@ -367,7 +376,7 @@ class LocalTrailerHireOptionsFlow(config_entries.OptionsFlow):
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
                     vol.Optional(
                         CONF_AUTO_REVIEW_CONTENT, default=current_auto_review_content
-                    ): str,
+                    ): vol.All(str, vol.Length(min=1)),
                 }
             ),
         )

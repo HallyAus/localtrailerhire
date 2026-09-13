@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -25,6 +26,7 @@ from .const import (
     MESSAGES_QUERY_URL,
     OWN_LISTINGS_URL,
     PROVIDER_REVIEW_DONE_TRANSITIONS,
+    PROVIDER_REVIEW_TRANSITIONS,
     RETRYABLE_STATUSES,
     REVIEWS_URL,
     TOKEN_REFRESH_BUFFER,
@@ -34,6 +36,11 @@ from .const import (
 from .util import parse_iso_datetime
 
 _LOGGER = logging.getLogger(__name__)
+
+# Kept private because this endpoint is only an implementation detail of the
+# review safety check. It is a read-only Marketplace API endpoint.
+_PROCESS_TRANSITIONS_URL = "https://flex-api.sharetribe.com/v1/api/process_transitions/query"
+_TRANSACTION_SHOW_URL = "https://flex-api.sharetribe.com/v1/api/transactions/show"
 
 
 def _parse_retry_after(value: str | None, default: int = 60) -> int:
@@ -67,6 +74,14 @@ class APIError(Exception):
     """API request failed."""
 
 
+class ProcessTransitionsUnavailableError(APIError):
+    """The integration could not safely determine the offered transitions."""
+
+
+class ProviderReviewNotOfferedError(APIError):
+    """Sharetribe is not currently offering a provider-review transition."""
+
+
 class SharetribeFlexAPI:
     """Client for Sharetribe Flex API."""
 
@@ -77,6 +92,7 @@ class SharetribeFlexAPI:
         username: str | None = None,
         password: str | None = None,
         refresh_token: str | None = None,
+        refresh_token_callback: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the API client."""
         self._session = session
@@ -84,6 +100,7 @@ class SharetribeFlexAPI:
         self._username = username
         self._password = password
         self._refresh_token = refresh_token
+        self._refresh_token_callback = refresh_token_callback
         self._access_token: str | None = None
         self._token_expiry: datetime | None = None
         self._lock = asyncio.Lock()
@@ -294,7 +311,17 @@ class SharetribeFlexAPI:
     def _process_token_response(self, result: dict[str, Any]) -> None:
         """Process token response and store credentials."""
         self._access_token = result.get("access_token")
+        previous_refresh_token = self._refresh_token
         self._refresh_token = result.get("refresh_token", self._refresh_token)
+        if (
+            self._refresh_token
+            and self._refresh_token != previous_refresh_token
+            and self._refresh_token_callback
+        ):
+            # Home Assistant supplies a synchronous config-entry callback. It
+            # keeps every service-triggered token rotation durable instead of
+            # waiting for the next scheduled coordinator refresh.
+            self._refresh_token_callback(self._refresh_token)
 
         expires_in = result.get("expires_in", 600)
         self._token_expiry = datetime.now(UTC) + timedelta(seconds=expires_in)
@@ -703,9 +730,9 @@ class SharetribeFlexAPI:
         Sharetribe's default trailer-hire process exposes two provider-review
         transitions: ``transition/review-1-by-provider`` (provider goes first)
         and ``transition/review-2-by-provider`` (after the customer has
-        already reviewed). When ``transition`` is None, ``review-1`` is tried
-        first and ``review-2`` is used as a fallback if Sharetribe rejects it
-        (typically because the customer reviewed first).
+        already reviewed). Before posting, the current process transitions are
+        queried and only a provider transition explicitly offered by Sharetribe
+        may be used. Lookup failures and unrecognised payloads fail closed.
 
         Returns ``{"success": True, "status_code": ..., "transition": <used>}``.
         """
@@ -714,41 +741,139 @@ class SharetribeFlexAPI:
         if not content or not content.strip():
             raise APIError("review content cannot be empty")
 
-        from .const import (
-            TRANSITION_REVIEW_BY_PROVIDER_FIRST,
-            TRANSITION_REVIEW_BY_PROVIDER_SECOND,
-        )
-
         params = {
             "reviewRating": int(rating),
             "reviewContent": content.strip(),
         }
 
-        candidates: list[str]
+        if transition and transition not in PROVIDER_REVIEW_TRANSITIONS:
+            raise APIError("Unsupported provider review transition; review was not posted")
+
+        offered = await self.get_available_process_transitions(transaction_id)
+        offered_provider = [
+            candidate for candidate in PROVIDER_REVIEW_TRANSITIONS if candidate in offered
+        ]
         if transition:
-            candidates = [transition]
-        else:
-            candidates = [
-                TRANSITION_REVIEW_BY_PROVIDER_FIRST,
-                TRANSITION_REVIEW_BY_PROVIDER_SECOND,
-            ]
-
-        last_err: APIError | None = None
-        for trans in candidates:
-            try:
-                result = await self.transition_transaction(transaction_id, trans, params=params)
-                return {**result, "transition": trans}
-            except APIError as err:
-                last_err = err
-                _LOGGER.debug(
-                    "Review transition %s failed (%s); trying next candidate",
-                    trans,
-                    err,
+            if transition not in offered_provider:
+                raise ProviderReviewNotOfferedError(
+                    "The requested provider review transition is not currently offered; "
+                    "review was not posted"
                 )
-                continue
+            selected = transition
+        elif offered_provider:
+            selected = offered_provider[0]
+        else:
+            raise ProviderReviewNotOfferedError(
+                "Sharetribe is not currently offering a provider review transition; "
+                f"{len(offered)} other transition(s) were offered and the review was not posted"
+            )
 
-        assert last_err is not None  # candidates is non-empty
-        raise last_err
+        result = await self.transition_transaction(transaction_id, selected, params=params)
+        return {**result, "transition": selected}
+
+    async def get_available_process_transitions(self, transaction_id: str) -> tuple[str, ...]:
+        """Return transitions currently offered for one transaction.
+
+        The live marketplace accepts ``transactionId`` by itself. Older API
+        behaviour required a process name, so a failed primary lookup retries
+        read-only with both the transaction id and the process name obtained
+        from ``transactions/show``. A failure never falls through to a write.
+        """
+        if not transaction_id:
+            raise APIError("transaction_id is required")
+
+        await self._ensure_valid_token()
+        if not self._access_token:
+            raise AuthenticationError("No access token available")
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        params = {"transactionId": transaction_id}
+
+        try:
+            result, _meta = await self._request_with_retry(
+                "GET", _PROCESS_TRANSITIONS_URL, headers=headers, params=params
+            )
+        except APIError:
+            try:
+                process_name = await self._get_transaction_process_name(transaction_id, headers)
+                if not process_name:
+                    raise ProcessTransitionsUnavailableError(
+                        "Unable to determine the transaction process; review was not posted"
+                    )
+                result, _meta = await self._request_with_retry(
+                    "GET",
+                    _PROCESS_TRANSITIONS_URL,
+                    headers=headers,
+                    params={
+                        "transactionId": transaction_id,
+                        "processName": process_name,
+                    },
+                )
+            except (APIError, AuthenticationError) as fallback_error:
+                raise ProcessTransitionsUnavailableError(
+                    "Unable to verify Sharetribe's offered transitions; review was not posted"
+                ) from fallback_error
+            _LOGGER.debug("Process-transition lookup required the process-name compatibility path")
+
+        transitions = self.parse_process_transitions(result)
+        if not transitions:
+            raise ProcessTransitionsUnavailableError(
+                "Sharetribe returned no recognised offered transitions; review was not posted"
+            )
+        return transitions
+
+    async def _get_transaction_process_name(
+        self, transaction_id: str, headers: dict[str, str]
+    ) -> str | None:
+        """Fetch a transaction's process name for the compatibility lookup."""
+        result, _meta = await self._request_with_retry(
+            "GET",
+            _TRANSACTION_SHOW_URL,
+            headers=headers,
+            params={"id": transaction_id},
+        )
+        data = result.get("data") or {}
+        attributes = data.get("attributes") if isinstance(data, dict) else {}
+        process_name = (attributes or {}).get("processName")
+        return process_name if isinstance(process_name, str) and process_name else None
+
+    @staticmethod
+    def parse_process_transitions(payload: dict[str, Any]) -> tuple[str, ...]:
+        """Parse offered transition names from tolerant JSON:API shapes.
+
+        The marketplace has returned transition names either as the resource
+        id or under ``attributes.transition``/``attributes.name``. Unknown ids
+        are ignored so callers fail closed instead of guessing.
+        """
+        data = payload.get("data")
+        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        parsed: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            attributes = item.get("attributes") or {}
+            item_id = item.get("id")
+            # Prefer explicit attribute names. A JSON:API resource ``id`` may
+            # be an opaque UUID; treating that as a transition would mask a
+            # valid attribute on the same item. String ids are accepted only
+            # in the live, self-identifying ``transition/...`` shape.
+            raw_values = [
+                attributes.get("transition") if isinstance(attributes, dict) else None,
+                attributes.get("name") if isinstance(attributes, dict) else None,
+                item_id.get("name") if isinstance(item_id, dict) else None,
+                item_id if isinstance(item_id, str) and item_id.startswith("transition/") else None,
+            ]
+            for raw in raw_values:
+                if not isinstance(raw, str) or not raw:
+                    continue
+                transition_name = raw if raw.startswith("transition/") else f"transition/{raw}"
+                if transition_name not in parsed:
+                    parsed.append(transition_name)
+                break
+        return tuple(parsed)
 
     async def _post_transition_with_retry(
         self,
@@ -1020,7 +1145,7 @@ class SharetribeFlexAPI:
         Returns simplified dicts ``{content, created_at, sender_id, deleted}``
         (verified shape: ``messages/query?transactionId&include=sender``).
         """
-        messages, _complete = await self.get_messages_incremental(transaction_id)
+        messages, _complete, _anchor = await self.get_messages_incremental(transaction_id)
         return messages
 
     async def get_messages_incremental(
@@ -1029,12 +1154,19 @@ class SharetribeFlexAPI:
         known_ids: frozenset[str] = frozenset(),
         *,
         max_pages: int = MAX_PAGES,
-    ) -> tuple[list[dict[str, Any]], bool]:
+        resume_after_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool, str | None]:
         """Fetch newest messages until a known id or the history end is reached.
 
         Sharetribe returns newest messages first and offers no created-at filter,
         so stopping at a previously archived stable id is the cheapest reliable
-        incremental sync. ``complete`` indicates that boundary was reached.
+        incremental sync. A capped initial backfill returns its oldest message id
+        as a stable anchor. Passing that id as ``resume_after_id`` scans back to
+        the anchor before collecting older pages, so page shifts caused by new
+        messages cannot make a later batch falsely report completion.
+
+        Returns ``(messages, complete, backfill_anchor_id)``. The anchor is only
+        populated while more historical pages remain.
         """
         if not transaction_id:
             raise APIError("transaction_id is required")
@@ -1050,6 +1182,9 @@ class SharetribeFlexAPI:
 
         messages: list[dict[str, Any]] = []
         page = 1
+        anchor_found = resume_after_id is None
+        backfill_pages = 0
+        oldest_backfill_id: str | None = None
         while True:
             params = {
                 "transactionId": transaction_id,
@@ -1062,17 +1197,54 @@ class SharetribeFlexAPI:
             )
             data = result.get("data", [])
             parsed = self.parse_messages(result)
-            boundary = next(
-                (index for index, item in enumerate(parsed) if item.get("id") in known_ids),
-                None,
-            )
-            messages.extend(parsed if boundary is None else parsed[:boundary])
 
-            if boundary is not None or len(data) < DEFAULT_PER_PAGE:
-                return messages, True
-            if page >= max_pages:
-                _LOGGER.warning("Hit MAX_PAGES while fetching messages")
-                return messages, False
+            if resume_after_id is not None:
+                if not anchor_found:
+                    anchor_index = next(
+                        (
+                            index
+                            for index, item in enumerate(parsed)
+                            if item.get("id") == resume_after_id
+                        ),
+                        None,
+                    )
+                    # Preserve messages that arrived while the older-history
+                    # backfill was in progress, without duplicating stored ids.
+                    prefix = parsed if anchor_index is None else parsed[:anchor_index]
+                    messages.extend(item for item in prefix if item.get("id") not in known_ids)
+                    if anchor_index is not None:
+                        anchor_found = True
+                        older = parsed[anchor_index + 1 :]
+                        messages.extend(older)
+                        backfill_pages = 1
+                        if older:
+                            oldest_backfill_id = older[-1].get("id")
+                else:
+                    messages.extend(parsed)
+                    backfill_pages += 1
+                    if parsed:
+                        oldest_backfill_id = parsed[-1].get("id")
+            else:
+                boundary = next(
+                    (index for index, item in enumerate(parsed) if item.get("id") in known_ids),
+                    None,
+                )
+                messages.extend(parsed if boundary is None else parsed[:boundary])
+                if boundary is not None:
+                    return messages, True, None
+
+            if len(data) < DEFAULT_PER_PAGE:
+                return messages, True, None
+
+            if resume_after_id is not None and anchor_found and backfill_pages >= max_pages:
+                return messages, False, oldest_backfill_id or resume_after_id
+            if resume_after_id is None and page >= max_pages:
+                _LOGGER.warning("Hit message page limit while fetching messages")
+                anchor = messages[-1].get("id") if messages else None
+                return messages, False, anchor
+            if page >= MAX_PAGES:
+                _LOGGER.warning("Could not reach the message backfill anchor within MAX_PAGES")
+                return messages, False, resume_after_id
             page += 1
 
     @classmethod
@@ -1461,9 +1633,13 @@ class SharetribeFlexAPI:
             "customer_last_name": customer_obj.get("last_name"),
             "customer_display_name": customer_profile.get("displayName"),
             "customer_phone": raw_phone if include_sensitive else self._mask_phone(raw_phone),
-            "pickup_address": protected_data.get("pickupAddress")
-            or protected_data.get("address")
-            or protected_data.get("residentialAddress"),
+            "pickup_address": (
+                protected_data.get("pickupAddress")
+                or protected_data.get("address")
+                or protected_data.get("residentialAddress")
+            )
+            if include_sensitive
+            else None,
             "pickup_suburb": protected_data.get("suburb"),
             "customer": customer_obj,
             "payout_total_aud": self._format_money(attrs.get("payoutTotal")),
@@ -1557,7 +1733,7 @@ class SharetribeFlexAPI:
         )
         suburb = protected_data.get("suburb")
 
-        if residential_address or building:
+        if include_sensitive and (residential_address or building):
             full_address = residential_address or ""
             if building and full_address:
                 full_address = f"{building}, {full_address}"

@@ -63,6 +63,26 @@ def _make_api(session: _FakeSession) -> SharetribeFlexAPI:
     return SharetribeFlexAPI(session=session, client_id="cid")
 
 
+def test_refresh_token_rotation_invokes_persistence_callback_immediately():
+    """A service-triggered refresh cannot leave only a stale stored token."""
+    persisted: list[str] = []
+    api = SharetribeFlexAPI(
+        session=_FakeSession([]),
+        client_id="cid",
+        refresh_token="old-token",
+        refresh_token_callback=persisted.append,
+    )
+
+    api._process_token_response(
+        {"access_token": "access", "refresh_token": "new-token", "expires_in": 600}
+    )
+    api._process_token_response(
+        {"access_token": "access-2", "refresh_token": "new-token", "expires_in": 600}
+    )
+
+    assert persisted == ["new-token"]
+
+
 @pytest.mark.asyncio
 async def test_request_retries_503_then_succeeds():
     session = _FakeSession(

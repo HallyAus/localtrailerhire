@@ -25,7 +25,7 @@
 | `bookings/query?transactionId=` | **`400 validation-missing-key`** — transactionId alone is not accepted; bookings are read via `transactions/query?include=booking` instead. |
 | `availability_exceptions/query?listingId=` | **`400 validation-missing-key`** — needs `start`+`end` too. |
 | `stock_adjustments/query?listingId=` | **`400 validation-missing-key`** — this marketplace is availability-based, not stock-based. |
-| `process_transitions/query` | **`400`** without `processName`/`transactionProcessAlias`. |
+| `process_transitions/query` | **Updated 2026-09-13:** `transactionId` alone returns that transaction's currently offered transitions. Older deployments may still require `processName`, so the client has a read-only compatibility fallback. |
 
 Everything in §6 is annotated with its probed status.
 
@@ -104,6 +104,7 @@ persist the newest one; on `401` refresh once and retry. Revoke:
 | Own listings | GET `/v1/api/own_listings/query` | JSON | `get_own_listings` | `OWN_LISTINGS_URL` |
 | Reviews | GET `/v1/api/reviews/query` | JSON | `get_reviews` | `REVIEWS_URL` |
 | Current user | GET `/v1/api/current_user/show` | JSON | `get_current_user_id` | `CURRENT_USER_URL` |
+| Offered transitions | GET `/v1/api/process_transitions/query?transactionId=` | JSON | `get_available_process_transitions` | private safety endpoint |
 
 Verified request details:
 - `transactions/query?only=sale&per_page=100&page=N&include=booking,customer,listing[,provider]`
@@ -152,7 +153,7 @@ Verified request details:
 
 **Transactions** ✅ GET `…/transactions/show?id=` · ✅ GET `…/transactions/query` (U) · — POST `…/initiate`,`…/speculatively_initiate`,`…/transition`,`…/speculatively_transition`
 
-**Process transitions** ⚠️ GET `/v1/api/process_transitions/query` (needs `processName`/`transactionProcessAlias`)
+**Process transitions** ✅ GET `/v1/api/process_transitions/query?transactionId=` → currently offered actor/system transitions. If the transaction-only query fails, the integration reads `transactions/show?id=` and retries with both `transactionId` and `processName`. [re-verified 2026-09-13]
 
 **Reviews** ✅ GET `/v1/api/reviews/query?subjectId=` · ✅ GET `…/reviews/show?id=`
 
@@ -273,8 +274,10 @@ required when the provider reviewed first and a later customer/payout transition
 has replaced the provider review as `lastTransition`. Failed attempts use a
 persisted exponential backoff rather than a small fixed attempt budget.
 
-**Provider review** = `transactions/transition` with `review-1-by-provider`
-(or `-2-`) + `params{reviewRating,reviewContent}`. Miss the window →
+**Provider review** = first query the transaction's currently offered process
+transitions, then call `transactions/transition` only with the offered
+`review-1-by-provider` (or `-2-`) + `params{reviewRating,reviewContent}`. Unknown,
+empty, or failed transition lookups stop without a POST. Miss the window →
 `expire-provider-review-period` and the review is lost (what auto-review prevents).
 
 ---
@@ -301,6 +304,9 @@ the archive count and redact customer names/contact fields.
 
 Message-body retention is a separate, explicit opt-in. Normal polling reads only
 a bounded set of active bookings (`MAX_MESSAGE_SCAN=25`); the archive additionally
+uses stable message anchors to resume capped historical backfills without skipping
+older pages when new messages shift pagination. Active conversations already read
+for reply detection are excluded from the same poll's rotating archive batch. It
 syncs a small rotating batch and stops when it reaches a stable message ID already
 stored. Because Sharetribe exposes no message timestamp filter, the manual
 `sync_message_history` service advances a persisted, rate-limited cursor in

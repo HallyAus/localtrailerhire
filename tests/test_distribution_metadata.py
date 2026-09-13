@@ -32,8 +32,11 @@ def test_hacs_repository_install_configuration() -> None:
 def test_manifest_has_hacs_required_fields() -> None:
     """Keep the integration manifest eligible for HACS validation."""
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     assert manifest["domain"] == COMPONENT.name
+    assert manifest["version"] == "1.6.1"
+    assert f"## {manifest['version']}" in changelog
     for key in (
         "codeowners",
         "documentation",
@@ -58,3 +61,16 @@ def test_local_brand_assets_match_home_assistant_dimensions() -> None:
     ):
         assert width > height
         assert 128 <= min(width, height) <= 256
+
+
+def test_english_translation_covers_initial_auto_review() -> None:
+    """The first-run auto-review fields must have user-facing labels."""
+    strings = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
+    english = json.loads((COMPONENT / "translations" / "en.json").read_text(encoding="utf-8"))
+
+    for section in ("config", "options", "issues", "services"):
+        assert english[section] == strings[section]
+    initial_options = strings["config"]["step"]["options"]
+    for key in ("auto_review", "auto_review_rating", "auto_review_content"):
+        assert initial_options["data"][key]
+        assert initial_options["data_description"][key]

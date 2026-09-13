@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -48,38 +51,27 @@ from .const import (
     DOMAIN,
     EVENT_BOOKING_CONFIRMED,
     EVENT_BOOKING_REQUEST_RECEIVED,
-    EVENT_MESSAGE_SENT,
     EVENT_REVIEW_LEFT,
     LOCALTRAILERHIRE_CLIENT_ID,
     MAX_MESSAGE_SCAN,
-    PROVIDER_REVIEW_TRANSITIONS,
     REQUEST_TRANSITIONS,
-    SERVICE_ACCEPT_BOOKING,
-    SERVICE_AUTO_REVIEW_DRY_RUN,
-    SERVICE_AUTO_REVIEW_RETRY_NOW,
-    SERVICE_CLEAR_CUSTOMER_HISTORY,
-    SERVICE_CLEAR_MESSAGE_HISTORY,
-    SERVICE_DECLINE_BOOKING,
-    SERVICE_EXPORT_CUSTOMER_HISTORY,
-    SERVICE_EXPORT_MESSAGE_HISTORY,
-    SERVICE_FIRE_CONFIRMED_EVENTS,
-    SERVICE_LEAVE_REVIEW,
-    SERVICE_MARK_MESSAGE_SENT,
-    SERVICE_REFRESH_NOW,
-    SERVICE_SEND_MESSAGE,
-    SERVICE_SYNC_MESSAGE_HISTORY,
     STORAGE_KEY,
     STORAGE_VERSION,
-    TRANSITION_ACCEPT,
-    TRANSITION_DECLINE,
 )
 from .customer_history import (
     clear_customer_history,
-    export_customer_history,
     merge_customer_history,
     prune_customer_history,
 )
-from .message_archive import export_message_archive, merge_messages, prune_message_archive
+from .message_archive import (
+    count_archived_messages,
+    merge_messages,
+    prune_message_archive,
+    select_sync_batch,
+    summarize_sync_batch,
+)
+from .services import REGISTERED_SERVICES, async_register_services
+from .setup_lifecycle import async_setup_transaction
 from .util import parse_iso_datetime
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,103 +116,11 @@ class LocalTrailerHireStore(Store):
         return old_data
 
 
-# Service schemas
-SERVICE_SEND_MESSAGE_SCHEMA = vol.Schema(
-    {
-        vol.Required("transaction_id"): cv.string,
-        vol.Required("message"): cv.string,
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_MARK_MESSAGE_SENT_SCHEMA = vol.Schema(
-    {
-        vol.Required("transaction_id"): cv.string,
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_FIRE_CONFIRMED_EVENTS_SCHEMA = vol.Schema(
-    {
-        vol.Optional("hours_back", default=24): cv.positive_int,
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_REFRESH_NOW_SCHEMA = vol.Schema(
-    {
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_TRANSITION_BOOKING_SCHEMA = vol.Schema(
-    {
-        vol.Required("transaction_id"): cv.string,
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_LEAVE_REVIEW_SCHEMA = vol.Schema(
-    {
-        vol.Required("transaction_id"): cv.string,
-        vol.Optional("rating", default=DEFAULT_REVIEW_RATING): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=5)
-        ),
-        vol.Optional("review_content", default=DEFAULT_REVIEW_CONTENT): cv.string,
-        vol.Optional("transition"): vol.In(PROVIDER_REVIEW_TRANSITIONS),
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-SERVICE_EXPORT_SCHEMA = vol.Schema(
-    {
-        vol.Optional("format", default="json"): vol.In(("json", "csv")),
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-SERVICE_CLEAR_HISTORY_SCHEMA = vol.Schema(
-    {
-        vol.Optional("scope", default="all"): vol.In(("sensitive", "all")),
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-SERVICE_SYNC_MESSAGES_SCHEMA = vol.Schema(
-    {
-        vol.Optional("batch_size", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-SERVICE_AUTO_REVIEW_CONTROL_SCHEMA = vol.Schema(
-    {
-        vol.Optional("transaction_id"): cv.string,
-        vol.Optional("config_entry_id"): cv.string,
-    }
-)
-
-
-def _get_entry_data(hass: HomeAssistant, config_entry_id: str | None) -> dict[str, Any]:
-    """Resolve the integration data dict for a given (or sole) config entry.
-
-    If ``config_entry_id`` is provided, it must match a configured entry.
-    Otherwise, exactly one entry must be configured.
-    """
-    entries = hass.data.get(DOMAIN, {})
-    valid = {eid: data for eid, data in entries.items() if isinstance(data, dict) and "api" in data}
-
-    if not valid:
-        raise HomeAssistantError("No Local Trailer Hire integration configured")
-
-    if config_entry_id:
-        if config_entry_id not in valid:
-            raise HomeAssistantError(f"config_entry_id {config_entry_id} not found")
-        return valid[config_entry_id]
-
-    if len(valid) > 1:
-        raise HomeAssistantError(
-            "Multiple Local Trailer Hire entries configured; specify config_entry_id"
-        )
-
-    return next(iter(valid.values()))
+async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
+    """Set up integration-wide actions before any config entry loads."""
+    hass.data.setdefault(DOMAIN, {})
+    async_register_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -250,12 +150,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await store.async_save(stored_data)
             await legacy_store.async_remove()
 
-    stored_data = stored_data or {}
-    stored_data.setdefault("sent_messages", {})
-    stored_data.setdefault("transaction_states", {})
-    stored_data.setdefault("customer_history", {})
-    stored_data.setdefault("message_history", {})
-    stored_data.setdefault("message_sync_cursor", 0)
+    stored_data = stored_data if isinstance(stored_data, dict) else {}
+    for mapping_key in (
+        "sent_messages",
+        "transaction_states",
+        "customer_history",
+        "message_history",
+    ):
+        if not isinstance(stored_data.get(mapping_key), dict):
+            stored_data[mapping_key] = {}
+    try:
+        stored_data["message_sync_cursor"] = max(
+            0, int(stored_data.get("message_sync_cursor", 0) or 0)
+        )
+    except (TypeError, ValueError):
+        stored_data["message_sync_cursor"] = 0
 
     # Get configuration. ``client_id`` is now hardcoded to the LocalTrailerHire
     # marketplace; we still read from entry.data for backwards compat with
@@ -277,6 +186,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auto_review_rating = entry.options.get(CONF_AUTO_REVIEW_RATING, DEFAULT_REVIEW_RATING)
     auto_review_content = entry.options.get(CONF_AUTO_REVIEW_CONTENT, DEFAULT_REVIEW_CONTENT)
 
+    def persist_refresh_token(token: str) -> None:
+        """Persist a rotated token immediately and discard any stored password."""
+        if not token or (
+            entry.data.get(CONF_REFRESH_TOKEN) == token and CONF_PASSWORD not in entry.data
+        ):
+            return
+        new_data = dict(entry.data)
+        new_data[CONF_REFRESH_TOKEN] = token
+        new_data.pop(CONF_PASSWORD, None)
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
     # Create API client
     session = async_get_clientsession(hass)
     api = SharetribeFlexAPI(
@@ -285,6 +205,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         username=username,
         password=password,
         refresh_token=refresh_token,
+        refresh_token_callback=persist_refresh_token,
     )
 
     # Test authentication
@@ -304,11 +225,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady("API connection failed") from err
     ir.async_delete_issue(hass, DOMAIN, f"authentication_{entry.entry_id}")
 
-    # Update refresh token if changed
-    if api.refresh_token and api.refresh_token != refresh_token:
-        new_data = dict(entry.data)
-        new_data[CONF_REFRESH_TOKEN] = api.refresh_token
-        hass.config_entries.async_update_entry(entry, data=new_data)
+    # Persist the rotating refresh token, but never retain the account password
+    # after authentication succeeds. Existing installations are scrubbed here
+    # on their next successful setup.
+    if api.refresh_token:
+        persist_refresh_token(api.refresh_token)
 
     # Create coordinator
     coordinator = LocalTrailerHireCoordinator(
@@ -327,9 +248,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         auto_review_content=auto_review_content,
     )
 
-    # Fetch initial data
-    await coordinator.async_config_entry_first_refresh()
-
+    # Publish the runtime object before the initial refresh. That refresh can
+    # detect a booking transition and fire an event consumed by automations;
+    # their service calls must be able to resolve this entry immediately.
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
         "api": api,
@@ -337,345 +258,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "stored_data": stored_data,
     }
 
-    # Define service handlers
-    async def async_send_message(call: ServiceCall) -> None:
-        """Handle send_message service call."""
-        transaction_id = call.data.get("transaction_id", "")
-        message = call.data.get("message", "")
-
-        _LOGGER.debug(
-            "SERVICE CALL: localtrailerhire.send_message - transaction_id=%s, message_length=%d",
-            transaction_id[:8] + "..." if transaction_id else "EMPTY",
-            len(message) if message else 0,
-        )
-
-        # Validate inputs
-        if not transaction_id or not isinstance(transaction_id, str):
-            raise HomeAssistantError("transaction_id is required and must be a non-empty string")
-
-        # Basic UUID format validation (should be 36 chars with hyphens)
-        transaction_id = transaction_id.strip()
-        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError(
-                f"transaction_id must be a valid UUID format (got: {transaction_id[:20]}...)"
-            )
-
-        if not message or not isinstance(message, str):
-            raise HomeAssistantError("message is required and must be a non-empty string")
-
-        message = message.strip()
-        if not message:
-            raise HomeAssistantError("message cannot be empty or whitespace only")
-
-        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
-        api_client = entry_data["api"]
-        coord = entry_data.get("coordinator")
-
-        try:
-            await api_client.send_message(transaction_id, message)
-
-            # Mark message as sent in storage (idempotent protection)
-            if coord:
-                await coord.mark_message_sent(transaction_id)
-
-            # Fire event for successful message send
-            hass.bus.async_fire(
-                EVENT_MESSAGE_SENT,
-                {
-                    "transaction_id": transaction_id,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                },
-            )
-
-            _LOGGER.debug("send_message succeeded for transaction %s", transaction_id)
-
-        except AuthenticationError as err:
-            _LOGGER.error("Authentication failed when sending message: %s", err)
-            raise HomeAssistantError(
-                "Authentication failed. Please reconfigure the integration."
-            ) from err
-
-        except APIError as err:
-            _LOGGER.error("Failed to send message: %s", err)
-            raise HomeAssistantError(f"Failed to send message: {err}") from err
-
-        except Exception as err:
-            _LOGGER.exception("Unexpected error sending message: %s", err)
-            raise HomeAssistantError(f"Unexpected error: {type(err).__name__}") from err
-
-    async def async_refresh_now(call: ServiceCall) -> None:
-        """Force an immediate coordinator refresh.
-
-        If ``config_entry_id`` is omitted, refreshes all configured entries.
-        """
-        entry_id = call.data.get("config_entry_id")
-        if entry_id:
-            entry_data = _get_entry_data(hass, entry_id)
-            await entry_data["coordinator"].async_request_refresh()
-            return
-
-        refreshed = False
-        for entry_data in hass.data.get(DOMAIN, {}).values():
-            if isinstance(entry_data, dict) and "coordinator" in entry_data:
-                await entry_data["coordinator"].async_request_refresh()
-                refreshed = True
-        if not refreshed:
-            raise HomeAssistantError("No Local Trailer Hire integration configured")
-
-    async def async_mark_message_sent(call: ServiceCall) -> None:
-        """Manually mark a transaction as having had a message sent."""
-        transaction_id = call.data.get("transaction_id", "").strip()
-
-        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError("transaction_id must be a valid UUID format")
-
-        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
-        coord = entry_data.get("coordinator")
-        if not coord:
-            raise HomeAssistantError("No coordinator available")
-        await coord.mark_message_sent(transaction_id)
-        _LOGGER.debug("Marked message_sent=true for transaction %s", transaction_id)
-
-    async def async_fire_confirmed_events(call: ServiceCall) -> None:
-        """Re-scan and fire confirmed events for bookings in the last N hours."""
-        hours_back = call.data.get("hours_back", 24)
-        cutoff = datetime.now(UTC) - timedelta(hours=hours_back)
-
-        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
-        coord = entry_data.get("coordinator")
-        if not coord:
-            raise HomeAssistantError("No coordinator available")
-        await coord.fire_confirmed_events_since(cutoff, dry_run=False)
-
-    async def _async_call_transition(call: ServiceCall, transition: str) -> None:
-        """Shared implementation for accept_booking / decline_booking."""
-        transaction_id = (call.data.get("transaction_id") or "").strip()
-        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError("transaction_id must be a valid UUID format")
-
-        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
-        api_client = entry_data["api"]
-        coord = entry_data.get("coordinator")
-
-        try:
-            await api_client.transition_transaction(transaction_id, transition)
-        except AuthenticationError as err:
-            raise HomeAssistantError(
-                "Authentication failed. Please reconfigure the integration."
-            ) from err
-        except APIError as err:
-            raise HomeAssistantError(f"Failed to {transition}: {err}") from err
-
-        # Refresh data so sensors reflect the new state quickly
-        if coord:
-            await coord.async_request_refresh()
-
-    async def async_accept_booking(call: ServiceCall) -> None:
-        """Accept a booking request."""
-        await _async_call_transition(call, TRANSITION_ACCEPT)
-
-    async def async_decline_booking(call: ServiceCall) -> None:
-        """Decline a booking request."""
-        await _async_call_transition(call, TRANSITION_DECLINE)
-
-    async def async_leave_review(call: ServiceCall) -> None:
-        """Post a provider review on a completed booking."""
-        transaction_id = (call.data.get("transaction_id") or "").strip()
-        if len(transaction_id) != 36 or transaction_id.count("-") != 4:
-            raise HomeAssistantError("transaction_id must be a valid UUID format")
-
-        rating = call.data.get("rating", DEFAULT_REVIEW_RATING)
-        content = call.data.get("review_content", DEFAULT_REVIEW_CONTENT)
-        transition = call.data.get("transition")
-
-        entry_data = _get_entry_data(hass, call.data.get("config_entry_id"))
-        api_client = entry_data["api"]
-        coord = entry_data.get("coordinator")
-
-        try:
-            result = await api_client.leave_review(
-                transaction_id,
-                rating=rating,
-                content=content,
-                transition=transition,
-            )
-        except AuthenticationError as err:
-            raise HomeAssistantError(
-                "Authentication failed. Please reconfigure the integration."
-            ) from err
-        except APIError as err:
-            raise HomeAssistantError(f"Failed to leave review: {err}") from err
-
-        hass.bus.async_fire(
-            EVENT_REVIEW_LEFT,
-            {
-                "transaction_id": transaction_id,
-                "transition": result.get("transition"),
-                "rating": rating,
-                "timestamp": datetime.now(UTC).isoformat(),
-            },
-        )
-
-        if coord:
-            await coord.async_request_refresh()
-
-    async def async_export_customer(call: ServiceCall) -> dict[str, Any]:
-        """Return the retained customer archive without writing it to disk."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        output_format = call.data.get("format", "json")
-        return {
-            "format": output_format,
-            "filename": f"localtrailerhire-customers.{output_format}",
-            "customer_count": len(coord.customer_history),
-            "content": export_customer_history(coord.customer_history, output_format),
-        }
-
-    async def async_clear_customer(call: ServiceCall) -> None:
-        """Clear all customer history or only its sensitive fields."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        await coord.clear_customer_history(call.data.get("scope", "all"))
-
-    async def async_sync_messages(call: ServiceCall) -> dict[str, Any]:
-        """Incrementally backfill the next bounded batch of conversations."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        return await coord.sync_message_history(call.data.get("batch_size", 10))
-
-    async def async_export_messages(call: ServiceCall) -> dict[str, Any]:
-        """Return the optional persistent message archive."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        output_format = call.data.get("format", "json")
-        archive = coord.message_history
-        return {
-            "format": output_format,
-            "filename": f"localtrailerhire-messages.{output_format}",
-            "conversation_count": len(archive),
-            "message_count": sum(len(record.get("messages", {})) for record in archive.values()),
-            "content": export_message_archive(archive, output_format),
-        }
-
-    async def async_clear_messages(call: ServiceCall) -> None:
-        """Delete the persisted message archive."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        await coord.clear_message_history()
-
-    async def async_auto_review_dry_run(call: ServiceCall) -> dict[str, Any]:
-        """Explain which transactions are reviewable without posting."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        return coord.auto_review_dry_run(call.data.get("transaction_id"))
-
-    async def async_auto_review_retry_now(call: ServiceCall) -> dict[str, Any]:
-        """Retry eligible reviews immediately, bypassing persisted backoff."""
-        coord = _get_entry_data(hass, call.data.get("config_entry_id"))["coordinator"]
-        return await coord.retry_auto_reviews_now(call.data.get("transaction_id"))
-
-    # Register services (each independently to handle upgrades)
-    if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_SEND_MESSAGE,
-            async_send_message,
-            schema=SERVICE_SEND_MESSAGE_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_NOW):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REFRESH_NOW,
-            async_refresh_now,
-            schema=SERVICE_REFRESH_NOW_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_MARK_MESSAGE_SENT):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_MARK_MESSAGE_SENT,
-            async_mark_message_sent,
-            schema=SERVICE_MARK_MESSAGE_SENT_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_FIRE_CONFIRMED_EVENTS):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_FIRE_CONFIRMED_EVENTS,
-            async_fire_confirmed_events,
-            schema=SERVICE_FIRE_CONFIRMED_EVENTS_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_ACCEPT_BOOKING):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_ACCEPT_BOOKING,
-            async_accept_booking,
-            schema=SERVICE_TRANSITION_BOOKING_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_DECLINE_BOOKING):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_DECLINE_BOOKING,
-            async_decline_booking,
-            schema=SERVICE_TRANSITION_BOOKING_SCHEMA,
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_LEAVE_REVIEW):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_LEAVE_REVIEW,
-            async_leave_review,
-            schema=SERVICE_LEAVE_REVIEW_SCHEMA,
-        )
-
-    response_services = (
-        (SERVICE_EXPORT_CUSTOMER_HISTORY, async_export_customer, SERVICE_EXPORT_SCHEMA),
-        (SERVICE_EXPORT_MESSAGE_HISTORY, async_export_messages, SERVICE_EXPORT_SCHEMA),
-        (
-            SERVICE_AUTO_REVIEW_DRY_RUN,
-            async_auto_review_dry_run,
-            SERVICE_AUTO_REVIEW_CONTROL_SCHEMA,
-        ),
+    # Register every action before the first scan. A confirmation discovered
+    # during startup otherwise reaches its automation while send_message is
+    # still absent, records the event as seen, and can permanently miss the
+    # customer confirmation.
+    await async_setup_transaction(
+        hass,
+        entry,
+        coordinator,
+        domain=DOMAIN,
+        registered_services=REGISTERED_SERVICES,
+        platforms=PLATFORMS,
     )
-    for service, handler, schema in response_services:
-        if not hass.services.has_service(DOMAIN, service):
-            hass.services.async_register(
-                DOMAIN,
-                service,
-                handler,
-                schema=schema,
-                supports_response=SupportsResponse.ONLY,
-            )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SYNC_MESSAGE_HISTORY):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_SYNC_MESSAGE_HISTORY,
-            async_sync_messages,
-            schema=SERVICE_SYNC_MESSAGES_SCHEMA,
-            supports_response=SupportsResponse.OPTIONAL,
-        )
-    if not hass.services.has_service(DOMAIN, SERVICE_AUTO_REVIEW_RETRY_NOW):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_AUTO_REVIEW_RETRY_NOW,
-            async_auto_review_retry_now,
-            schema=SERVICE_AUTO_REVIEW_CONTROL_SCHEMA,
-            supports_response=SupportsResponse.OPTIONAL,
-        )
-    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_CUSTOMER_HISTORY):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_CLEAR_CUSTOMER_HISTORY,
-            async_clear_customer,
-            schema=SERVICE_CLEAR_HISTORY_SCHEMA,
-        )
-    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_MESSAGE_HISTORY):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_CLEAR_MESSAGE_HISTORY,
-            async_clear_messages,
-            schema=SERVICE_REFRESH_NOW_SCHEMA,
-        )
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Listen for options updates
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -687,27 +281,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id, None)
-
-        # Remove services when the last entry is unloaded
-        if not hass.data.get(DOMAIN):
-            for service in (
-                SERVICE_SEND_MESSAGE,
-                SERVICE_REFRESH_NOW,
-                SERVICE_MARK_MESSAGE_SENT,
-                SERVICE_FIRE_CONFIRMED_EVENTS,
-                SERVICE_ACCEPT_BOOKING,
-                SERVICE_DECLINE_BOOKING,
-                SERVICE_LEAVE_REVIEW,
-                SERVICE_EXPORT_CUSTOMER_HISTORY,
-                SERVICE_CLEAR_CUSTOMER_HISTORY,
-                SERVICE_SYNC_MESSAGE_HISTORY,
-                SERVICE_EXPORT_MESSAGE_HISTORY,
-                SERVICE_CLEAR_MESSAGE_HISTORY,
-                SERVICE_AUTO_REVIEW_DRY_RUN,
-                SERVICE_AUTO_REVIEW_RETRY_NOW,
-            ):
-                if hass.services.has_service(DOMAIN, service):
-                    hass.services.async_remove(DOMAIN, service)
 
     return unload_ok
 
@@ -773,7 +346,12 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         self._stored_data.setdefault("message_history", {})
         self._stored_data.setdefault("message_sync_cursor", 0)
         self.customer_history: dict[str, Any] = self._stored_data["customer_history"]
-        self.message_history: dict[str, Any] = self._stored_data["message_history"]
+        stored_message_history = self._stored_data["message_history"]
+        self.message_history: dict[str, Any] = (
+            stored_message_history if isinstance(stored_message_history, dict) else {}
+        )
+        self._stored_data["message_history"] = self.message_history
+        self._message_archive_lock = asyncio.Lock()
 
         # Listings cache (refreshed each update)
         self.listings: list[dict[str, Any]] = []
@@ -832,11 +410,13 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             self.pages_fetched = len(diagnostics.get("pages", []))
 
             # Update refresh token if it changed
-            if self.api.refresh_token and self.api.refresh_token != self.entry.data.get(
-                CONF_REFRESH_TOKEN
+            if self.api.refresh_token and (
+                self.api.refresh_token != self.entry.data.get(CONF_REFRESH_TOKEN)
+                or CONF_PASSWORD in self.entry.data
             ):
                 new_data = dict(self.entry.data)
                 new_data[CONF_REFRESH_TOKEN] = self.api.refresh_token
+                new_data.pop(CONF_PASSWORD, None)
                 self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
             # Detect newly received booking requests and fire events
@@ -867,13 +447,18 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
             # Scan active bookings for unanswered customer messages (best-effort)
             try:
-                await self._refresh_awaiting_replies(bookings)
+                scanned_message_ids = await self._refresh_awaiting_replies(bookings)
             except Exception:
                 _LOGGER.exception("Awaiting-reply scan failed")
+                scanned_message_ids = set()
 
             if self.archive_messages:
                 try:
-                    await self.sync_message_history(min(5, MAX_MESSAGE_SCAN), bookings=bookings)
+                    await self.sync_message_history(
+                        min(5, MAX_MESSAGE_SCAN),
+                        bookings=bookings,
+                        excluded_transaction_ids=scanned_message_ids,
+                    )
                 except Exception:
                     _LOGGER.exception("Incremental message archive sync failed")
 
@@ -1288,59 +873,105 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
 
     async def clear_message_history(self) -> None:
         """Delete all retained message content and reset the backfill cursor."""
-        self.message_history = {}
-        self._stored_data["message_history"] = {}
-        self._stored_data["message_sync_cursor"] = 0
-        await self._store.async_save(self._stored_data)
+        async with self._message_archive_lock:
+            self.message_history = {}
+            self._stored_data["message_history"] = {}
+            self._stored_data["message_sync_cursor"] = 0
+            await self._store.async_save(self._stored_data)
 
     async def sync_message_history(
         self,
         batch_size: int = 10,
         *,
         bookings: list[dict[str, Any]] | None = None,
+        excluded_transaction_ids: set[str] | frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Incrementally sync a rotating bounded batch of conversations."""
         source = bookings if bookings is not None else (self.data or [])
         transaction_ids = [
-            str(item["transaction_id"]) for item in source if item.get("transaction_id")
+            str(item["transaction_id"])
+            for item in source
+            if item.get("transaction_id")
+            and str(item["transaction_id"]) not in excluded_transaction_ids
         ]
         if not transaction_ids:
-            return {"processed": 0, "new_messages": 0, "remaining": 0, "complete": True}
+            return summarize_sync_batch(
+                total_conversations=0,
+                selected_transaction_ids=[],
+                completed_transaction_ids=set(),
+                partial_transaction_ids=set(),
+                failed_transaction_ids=set(),
+                new_messages=0,
+            )
 
-        cursor = int(self._stored_data.get("message_sync_cursor", 0) or 0) % len(transaction_ids)
-        selected = transaction_ids[cursor : cursor + batch_size]
-        if len(selected) < batch_size:
-            selected += transaction_ids[: batch_size - len(selected)]
-        selected = selected[: min(batch_size, len(transaction_ids))]
-
-        archive = self.message_history
-        added = 0
-        completed = 0
-        for txn_id in selected:
-            known_ids = frozenset(dict((archive.get(txn_id) or {}).get("messages") or {}).keys())
-            try:
-                messages, complete = await self.api.get_messages_incremental(
-                    txn_id, known_ids, max_pages=3
+        async with self._message_archive_lock:
+            cursor = int(self._stored_data.get("message_sync_cursor", 0) or 0)
+            selected, next_cursor = select_sync_batch(transaction_ids, batch_size, cursor)
+            archive = self.message_history
+            archive_changed = False
+            added = 0
+            completed_ids: set[str] = set()
+            partial_ids: set[str] = set()
+            failed_ids: set[str] = set()
+            for txn_id in selected:
+                raw_record = archive.get(txn_id)
+                record = raw_record if isinstance(raw_record, dict) else {}
+                raw_messages = record.get("messages")
+                stored_messages = raw_messages if isinstance(raw_messages, dict) else {}
+                known_ids = frozenset(str(message_id) for message_id in stored_messages)
+                resume_after_id = (
+                    record.get("backfill_anchor_id")
+                    if record.get("sync_status") == "partial"
+                    else None
                 )
-            except (APIError, AuthenticationError):
-                continue
-            before = len(known_ids)
-            archive, _changed = merge_messages(archive, txn_id, messages)
-            added += max(0, len((archive.get(txn_id) or {}).get("messages", {})) - before)
-            completed += int(complete)
+                try:
+                    messages, complete, next_anchor = await self.api.get_messages_incremental(
+                        txn_id,
+                        known_ids,
+                        max_pages=3,
+                        resume_after_id=resume_after_id,
+                    )
+                except (APIError, AuthenticationError):
+                    archive, changed = merge_messages(archive, txn_id, [], sync_error=True)
+                    archive_changed = archive_changed or changed
+                    failed_ids.add(txn_id)
+                    continue
+                before = len(known_ids)
+                archive, changed = merge_messages(
+                    archive,
+                    txn_id,
+                    messages,
+                    sync_complete=complete,
+                    backfill_anchor_id=next_anchor,
+                )
+                archive_changed = archive_changed or changed
+                updated_record = archive.get(txn_id)
+                updated_messages = (
+                    updated_record.get("messages", {}) if isinstance(updated_record, dict) else {}
+                )
+                added += max(0, len(updated_messages) - before)
+                if complete:
+                    completed_ids.add(txn_id)
+                else:
+                    partial_ids.add(txn_id)
 
-        archive = prune_message_archive(archive, self.history_retention)
-        self.message_history = archive
-        self._stored_data["message_history"] = archive
-        self._stored_data["message_sync_cursor"] = (cursor + len(selected)) % len(transaction_ids)
-        await self._store.async_save(self._stored_data)
-        return {
-            "processed": len(selected),
-            "new_messages": added,
-            "conversations_at_boundary": completed,
-            "remaining": max(0, len(transaction_ids) - len(selected)),
-            "complete": len(selected) >= len(transaction_ids),
-        }
+            pruned = prune_message_archive(archive, self.history_retention)
+            archive_changed = archive_changed or pruned != archive
+            archive = pruned
+            self.message_history = archive
+            self._stored_data["message_history"] = archive
+            cursor_changed = next_cursor != self._stored_data.get("message_sync_cursor", 0)
+            self._stored_data["message_sync_cursor"] = next_cursor
+            if archive_changed or cursor_changed:
+                await self._store.async_save(self._stored_data)
+        return summarize_sync_batch(
+            total_conversations=len(transaction_ids),
+            selected_transaction_ids=selected,
+            completed_transaction_ids=completed_ids,
+            partial_transaction_ids=partial_ids,
+            failed_transaction_ids=failed_ids,
+            new_messages=added,
+        )
 
     async def _run_auto_review(
         self,
@@ -1385,7 +1016,8 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
                 # Window likely not open yet (or transient). Persist the retry
                 # schedule so frequent coordinator polls cannot exhaust the
                 # booking's opportunity before Sharetribe opens the transition.
-                state.update(auto_review_failure_state(state, now, type(err).__name__))
+                safe_failure = f"{type(err).__name__}: {str(err)[:160]}"
+                state.update(auto_review_failure_state(state, now, safe_failure))
                 changed = True
                 failed += 1
                 _LOGGER.debug(
@@ -1448,7 +1080,11 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         }
 
     async def retry_auto_reviews_now(self, transaction_id: str | None = None) -> dict[str, Any]:
-        """Immediately retry one or all currently reviewable transactions."""
+        """Immediately retry one explicitly selected review transaction."""
+        if not transaction_id:
+            raise HomeAssistantError(
+                "transaction_id is required; use auto_review_dry_run to inspect candidates"
+            )
         dry_run = self.auto_review_dry_run(transaction_id)
         force_ids = set(dry_run["candidate_transaction_ids"])
         result = await self._run_auto_review(self.data or [], datetime.now(UTC), force_ids)
@@ -1473,7 +1109,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             DOMAIN,
             issue_id,
             is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
+            severity=ir.IssueSeverity.ERROR,
             translation_key="auto_review_failed",
             translation_placeholders={"count": str(failing)},
         )
@@ -1499,7 +1135,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         status["due_now_count"] = dry_run["due_now_count"]
         return status
 
-    async def _refresh_awaiting_replies(self, bookings: list[dict[str, Any]]) -> None:
+    async def _refresh_awaiting_replies(self, bookings: list[dict[str, Any]]) -> set[str]:
         """Flag active bookings whose latest message awaits a host reply.
 
         Bounded to ``MAX_MESSAGE_SCAN`` active (upcoming/in_progress) bookings to
@@ -1514,51 +1150,83 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             and b.get("transaction_id")
         ][:MAX_MESSAGE_SCAN]
 
-        awaiting: list[str] = []
-        latest: dict[str, Any] | None = None
-        latest_ts = ""
-        for booking in active:
-            txn_id = booking["transaction_id"]
-            try:
-                if self.archive_messages:
-                    known = frozenset(
-                        dict((self.message_history.get(txn_id) or {}).get("messages") or {}).keys()
-                    )
-                    new_messages, _complete = await self.api.get_messages_incremental(
-                        txn_id, known, max_pages=2
-                    )
-                    self.message_history, _changed = merge_messages(
-                        self.message_history, txn_id, new_messages
-                    )
-                    messages = list(
-                        dict(
-                            (self.message_history.get(txn_id) or {}).get("messages") or {}
-                        ).values()
-                    )
-                else:
-                    messages = await self.api.get_messages(txn_id)
-            except (APIError, AuthenticationError) as err:
-                _LOGGER.debug("Message fetch failed for %s: %s", txn_id, err)
-                continue
-            if self.api.awaiting_reply(messages, provider_id):
-                awaiting.append(txn_id)
-            msg = self.api.latest_message(messages)
-            if msg and (msg.get("created_at") or "") > latest_ts:
-                latest_ts = msg.get("created_at") or ""
-                latest = {
-                    **msg,
-                    "transaction_id": txn_id,
-                    "listing_title": booking.get("listing_title"),
-                }
+        async def _scan() -> set[str]:
+            awaiting: list[str] = []
+            latest: dict[str, Any] | None = None
+            latest_ts = ""
+            archive_changed = False
+            scanned: set[str] = set()
+            for booking in active:
+                txn_id = str(booking["transaction_id"])
+                scanned.add(txn_id)
+                try:
+                    if self.archive_messages:
+                        raw_record = self.message_history.get(txn_id)
+                        record = raw_record if isinstance(raw_record, dict) else {}
+                        raw_messages = record.get("messages")
+                        stored_messages = raw_messages if isinstance(raw_messages, dict) else {}
+                        known = frozenset(str(message_id) for message_id in stored_messages)
+                        resume_after_id = (
+                            record.get("backfill_anchor_id")
+                            if record.get("sync_status") == "partial"
+                            else None
+                        )
+                        (
+                            new_messages,
+                            complete,
+                            next_anchor,
+                        ) = await self.api.get_messages_incremental(
+                            txn_id,
+                            known,
+                            max_pages=2,
+                            resume_after_id=resume_after_id,
+                        )
+                        self.message_history, changed = merge_messages(
+                            self.message_history,
+                            txn_id,
+                            new_messages,
+                            sync_complete=complete,
+                            backfill_anchor_id=next_anchor,
+                        )
+                        archive_changed = archive_changed or changed
+                        updated_record = self.message_history.get(txn_id)
+                        updated_messages = (
+                            updated_record.get("messages", {})
+                            if isinstance(updated_record, dict)
+                            else {}
+                        )
+                        messages = list(updated_messages.values())
+                    else:
+                        messages = await self.api.get_messages(txn_id)
+                except (APIError, AuthenticationError) as err:
+                    _LOGGER.debug("Message fetch failed for %s: %s", txn_id, err)
+                    continue
+                if self.api.awaiting_reply(messages, provider_id):
+                    awaiting.append(txn_id)
+                msg = self.api.latest_message(messages)
+                if msg and (msg.get("created_at") or "") > latest_ts:
+                    latest_ts = msg.get("created_at") or ""
+                    latest = {
+                        **msg,
+                        "transaction_id": txn_id,
+                        "listing_title": booking.get("listing_title"),
+                    }
 
-        self.awaiting_reply_txns = awaiting
-        self.latest_message = latest
-        if self.archive_messages:
-            self.message_history = prune_message_archive(
-                self.message_history, self.history_retention
-            )
-            self._stored_data["message_history"] = self.message_history
-            await self._store.async_save(self._stored_data)
+            self.awaiting_reply_txns = awaiting
+            self.latest_message = latest
+            if self.archive_messages:
+                pruned = prune_message_archive(self.message_history, self.history_retention)
+                archive_changed = archive_changed or pruned != self.message_history
+                self.message_history = pruned
+                if archive_changed:
+                    self._stored_data["message_history"] = self.message_history
+                    await self._store.async_save(self._stored_data)
+            return scanned
+
+        if not self.archive_messages:
+            return await _scan()
+        async with self._message_archive_lock:
+            return await _scan()
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Get diagnostic information for debugging."""
@@ -1571,9 +1239,7 @@ class LocalTrailerHireCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             "confirmed_new_count": self.confirmed_new_count,
             "customer_history_count": len(self.customer_history),
             "message_history_conversation_count": len(self.message_history),
-            "message_history_message_count": sum(
-                len(record.get("messages", {})) for record in self.message_history.values()
-            ),
+            "message_history_message_count": count_archived_messages(self.message_history),
             "history_retention": self.history_retention,
             "archive_messages": self.archive_messages,
             "auto_review": self.auto_review_status,

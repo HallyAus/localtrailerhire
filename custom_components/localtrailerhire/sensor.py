@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CURRENCY_DOLLAR, PERCENTAGE, EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -95,14 +95,40 @@ async def async_setup_entry(
         AutoReviewStatusSensor(coordinator, entry),
     ]
 
-    # Per-listing entities (created from the initial listings snapshot)
-    for listing in coordinator.listings:
-        listing_id = listing.get("id")
-        if not listing_id:
-            continue
-        entities.append(ListingStateSensor(coordinator, entry, listing_id))
-        entities.append(ListingPriceSensor(coordinator, entry, listing_id))
-        entities.append(ListingBookingsCountSensor(coordinator, entry, listing_id))
+    known_listing_ids: set[str] = set()
+
+    def _new_listing_entities() -> list[SensorEntity]:
+        """Create entities only for listings not observed by this platform."""
+        discovered: list[SensorEntity] = []
+        for listing in coordinator.listings:
+            raw_listing_id = listing.get("id")
+            if not raw_listing_id:
+                continue
+            listing_id = str(raw_listing_id)
+            if listing_id in known_listing_ids:
+                continue
+            # Mark the id before handing entities to Home Assistant so a
+            # re-entrant coordinator notification cannot create duplicates.
+            known_listing_ids.add(listing_id)
+            discovered.extend(
+                (
+                    ListingStateSensor(coordinator, entry, listing_id),
+                    ListingPriceSensor(coordinator, entry, listing_id),
+                    ListingBookingsCountSensor(coordinator, entry, listing_id),
+                )
+            )
+        return discovered
+
+    # Keep the initial setup as one batch, then discover newly published or
+    # newly visible listings after any later coordinator refresh.
+    entities.extend(_new_listing_entities())
+
+    @callback
+    def _async_discover_listings() -> None:
+        if discovered := _new_listing_entities():
+            async_add_entities(discovered)
+
+    entry.async_on_unload(coordinator.async_add_listener(_async_discover_listings))
 
     async_add_entities(entities)
 
@@ -1097,7 +1123,8 @@ class _BaseListingSensor(CoordinatorEntity[LocalTrailerHireCoordinator], SensorE
     @property
     def _listing(self) -> dict[str, Any] | None:
         for listing in self.coordinator.listings:
-            if listing.get("id") == self._listing_id:
+            listing_id = listing.get("id")
+            if listing_id is not None and str(listing_id) == self._listing_id:
                 return listing
         return None
 

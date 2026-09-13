@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from lth_auto_review import (
     AUTO_REVIEW_RETRY_MAX,
     auto_review_failure_state,
@@ -41,8 +42,12 @@ def test_not_reviewable_in_progress():
     assert is_reviewable(_booking("t", "in_progress", 0), NOW) is False
 
 
-def test_not_reviewable_too_old():
-    assert is_reviewable(_booking("t", "past", -30), NOW) is False
+def test_old_booking_remains_candidate_when_sharetribe_is_authority():
+    assert is_reviewable(_booking("t", "past", -30), NOW) is True
+
+
+def test_optional_query_bound_can_exclude_old_booking():
+    assert is_reviewable(_booking("t", "past", -30), NOW, max_age=timedelta(days=14)) is False
 
 
 def test_not_reviewable_missing_end():
@@ -78,6 +83,36 @@ def test_customer_first_still_allows_provider_review():
     booking = _booking("t", "past", -1)
     booking["last_transition"] = "transition/review-1-by-customer"
     assert is_reviewable(booking, NOW) is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("last_transition", "transition/cancel-by-customer"),
+        ("last_transition", "transition/cancel-for-provider-with-refund"),
+        ("last_transition", "transition/payout-after-cancel-without-refund"),
+        ("last_transition", "transition/decline"),
+        ("last_transition", "transition/expire-payment"),
+        ("transaction_state", "state/cancelled"),
+        ("process_name", "customer-cancel"),
+    ],
+)
+def test_cancelled_and_terminal_bookings_are_never_candidates(field: str, value: str):
+    booking = _booking("t", "past", -1)
+    booking[field] = value
+    assert is_reviewable(booking, NOW) is False
+
+
+def test_known_offered_transitions_override_date_heuristic():
+    booking = _booking("t", "past", -30)
+    booking["offered_transitions"] = ["transition/review-2-by-provider"]
+    assert is_reviewable(booking, NOW, max_age=timedelta(days=14)) is True
+
+
+def test_known_non_provider_offers_fail_closed():
+    booking = _booking("t", "past", -1)
+    booking["offered_transitions"] = ["transition/review-1-by-customer"]
+    assert is_reviewable(booking, NOW) is False
 
 
 def test_force_selection_can_bypass_retry_backoff():
@@ -188,7 +223,10 @@ def test_mixed_realistic_selection():
         _booking("upcoming", "upcoming", 5),
     ]
     states = {"past_fresh": {"auto_review_attempts": 1}}  # under the cap
-    assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == ["past_fresh"]
+    assert select_auto_reviews(bookings, states, enabled=True, now=NOW) == [
+        "past_fresh",
+        "past_old",
+    ]
 
 
 # --- summarize_auto_reviews --------------------------------------------------

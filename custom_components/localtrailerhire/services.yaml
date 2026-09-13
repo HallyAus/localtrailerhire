@@ -267,11 +267,11 @@ auto_review_dry_run:
 
 auto_review_retry_now:
   name: Retry Auto-Review Now
-  description: Immediately retry one or all currently reviewable transactions, bypassing the saved backoff.
+  description: Immediately retry one explicitly selected reviewable transaction, bypassing its saved backoff. Use the dry run first.
   fields:
     transaction_id:
       name: Transaction ID
-      required: false
+      required: true
       selector:
         text:
     config_entry_id:

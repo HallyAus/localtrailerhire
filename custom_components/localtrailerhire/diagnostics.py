@@ -10,6 +10,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_CLIENT_ID, CONF_REFRESH_TOKEN, DOMAIN
+from .message_archive import count_archived_messages
 
 # Keys to redact from diagnostics output
 TO_REDACT = {
@@ -94,9 +95,8 @@ async def async_get_config_entry_diagnostics(
             "bookings_count": len(coordinator.data) if coordinator.data else 0,
             "customer_history_count": len(getattr(coordinator, "customer_history", {})),
             "message_history_conversation_count": len(getattr(coordinator, "message_history", {})),
-            "message_history_message_count": sum(
-                len(record.get("messages", {}))
-                for record in getattr(coordinator, "message_history", {}).values()
+            "message_history_message_count": count_archived_messages(
+                getattr(coordinator, "message_history", {})
             ),
             "history_retention": getattr(coordinator, "history_retention", None),
             "archive_messages": getattr(coordinator, "archive_messages", False),

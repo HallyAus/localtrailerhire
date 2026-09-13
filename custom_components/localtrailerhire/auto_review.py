@@ -5,15 +5,11 @@ harness can load it via ``importlib`` without installing Home Assistant. The
 coordinator does the IO (calling ``api.leave_review`` and persisting state);
 everything here is a pure function over plain dicts.
 
-Design note — why this is coarse:
-Sharetribe transitions are template-specific and not stable across processes
-(see the project SKILL.md). Rather than try to detect the exact "provider can
-review now" state, we attempt the review on any *past* booking within a bounded
-window and let the transition endpoint be the source of truth: ``leave_review``
-tries ``review-1`` then ``review-2`` and raises ``APIError`` if neither is
-allowed yet. Failed attempts use a persisted exponential backoff until the
-window opens or the booking ages out. State is persisted, so this survives
-Home Assistant restarts (unlike the old delay-based example automation).
+Sharetribe transitions are template-specific and not stable across processes.
+This module performs a conservative local pre-filter; ``api.leave_review`` then
+queries Sharetribe's currently offered process transitions and fails closed
+unless a provider-review transition is explicitly offered. Failed attempts use
+a persisted exponential backoff. State survives Home Assistant restarts.
 """
 
 from __future__ import annotations
@@ -21,13 +17,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from .const import PROVIDER_REVIEW_DONE_TRANSITIONS
+from .const import PROVIDER_REVIEW_DONE_TRANSITIONS, PROVIDER_REVIEW_TRANSITIONS
 from .util import parse_iso_datetime
 
-# Bounded attempt window after a booking ends: wide enough for Sharetribe to
-# open the provider review window, narrow enough to stop hammering once the
-# review period has clearly expired.
+# Backwards-compatible optional query bound. It is no longer the default
+# eligibility authority; Sharetribe's currently offered transitions are.
 AUTO_REVIEW_MAX_AGE: timedelta = timedelta(days=14)
+
+_NON_REVIEWABLE_MARKERS = (
+    "abort",
+    "cancel",
+    "declin",
+    "enquire",
+    "expire-payment",
+    "expired",
+)
 
 # A transaction may become date-past before its Sharetribe process opens the
 # review transition. Back off failures instead of exhausting a small retry
@@ -75,13 +79,14 @@ def is_reviewable(
     booking: dict[str, Any],
     now: datetime,
     *,
-    max_age: timedelta = AUTO_REVIEW_MAX_AGE,
+    max_age: timedelta | None = None,
 ) -> bool:
     """Return True if an auto-review should be *attempted* for this booking now.
 
-    Coarse by design (see module docstring): the booking must be ``past`` and
-    its end must fall within ``[now - max_age, now]``. Whether the review can
-    actually be posted is decided by the API when the attempt is made.
+    This is a local pre-filter only. The booking must be past, not cancelled or
+    otherwise terminal, and not already provider-reviewed. Sharetribe's offered
+    transitions are the final authority in ``api.leave_review``. ``max_age`` is
+    retained as an optional caller-supplied query bound, not an eligibility rule.
     """
     if booking.get("category") != "past":
         return False
@@ -91,10 +96,29 @@ def is_reviewable(
         booking.get("last_transition") in PROVIDER_REVIEW_DONE_TRANSITIONS
     ):
         return False
+    lifecycle_values = (
+        booking.get("last_transition"),
+        booking.get("transaction_state"),
+        booking.get("process_name"),
+    )
+    if any(
+        marker in value.lower()
+        for value in lifecycle_values
+        if isinstance(value, str)
+        for marker in _NON_REVIEWABLE_MARKERS
+    ):
+        return False
+
+    offered = booking.get("offered_transitions")
+    if offered is not None:
+        return isinstance(offered, (list, tuple, set, frozenset)) and any(
+            transition in PROVIDER_REVIEW_TRANSITIONS for transition in offered
+        )
+
     end = parse_iso_datetime(booking.get("booking_end"))
     if end is None:
         return False
-    return end <= now <= end + max_age
+    return end <= now and (max_age is None or now <= end + max_age)
 
 
 def select_auto_reviews(
@@ -104,7 +128,7 @@ def select_auto_reviews(
     enabled: bool,
     now: datetime,
     reviewed_txn_ids: frozenset[str] = frozenset(),
-    max_age: timedelta = AUTO_REVIEW_MAX_AGE,
+    max_age: timedelta | None = None,
     ignore_backoff: bool = False,
 ) -> list[str]:
     """Return transaction ids that should have an auto-review attempted now.

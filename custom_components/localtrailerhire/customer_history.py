@@ -13,6 +13,11 @@ from .util import parse_iso_datetime
 _SENSITIVE_CUSTOMER_FIELDS = frozenset({"phone", "address", "licence"})
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Return a shallow JSON-object copy, or an empty object for bad storage."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _customer_snapshot(customer: dict[str, Any], include_sensitive: bool) -> dict[str, Any]:
     """Copy useful customer fields, omitting empty and non-opted-in PII."""
     snapshot: dict[str, Any] = {}
@@ -44,7 +49,7 @@ def _transaction_snapshot(booking: dict[str, Any], include_sensitive: bool) -> d
         "payout_total_aud",
     )
     snapshot = {key: booking.get(key) for key in keys if booking.get(key) is not None}
-    details = dict(booking.get("booking_details") or {})
+    details = _as_dict(booking.get("booking_details"))
     if not include_sensitive:
         details.pop("referrer_name", None)
     details = {key: value for key, value in details.items() if value is not None}
@@ -65,16 +70,15 @@ def merge_customer_history(
     licence and referrer values, so an options change cannot leave stale PII in
     Home Assistant storage.
     """
+    source_history = existing if isinstance(existing, dict) else {}
     history: dict[str, Any] = {}
-    for customer_id, raw_record in (existing or {}).items():
+    for customer_id, raw_record in source_history.items():
         if not isinstance(raw_record, dict):
             continue
         record = dict(raw_record)
-        record["customer"] = _customer_snapshot(
-            dict(record.get("customer") or {}), include_sensitive
-        )
+        record["customer"] = _customer_snapshot(_as_dict(record.get("customer")), include_sensitive)
         transactions = {}
-        for transaction_id, raw_transaction in dict(record.get("transactions") or {}).items():
+        for transaction_id, raw_transaction in _as_dict(record.get("transactions")).items():
             if not isinstance(raw_transaction, dict):
                 continue
             transaction = dict(raw_transaction)
@@ -88,7 +92,9 @@ def merge_customer_history(
         history[str(customer_id)] = record
 
     for booking in bookings:
-        customer = booking.get("customer") or {}
+        if not isinstance(booking, dict):
+            continue
+        customer = _as_dict(booking.get("customer"))
         customer_id = booking.get("customer_id") or customer.get("id")
         transaction_id = booking.get("transaction_id")
         if not customer_id or not transaction_id:
@@ -98,16 +104,16 @@ def merge_customer_history(
             str(customer_id),
             {"customer": {}, "transactions": {}, "booking_count": 0},
         )
-        current_customer = dict(record.get("customer") or {})
+        current_customer = _as_dict(record.get("customer"))
         current_customer.update(_customer_snapshot(customer, include_sensitive))
         record["customer"] = current_customer
 
-        transactions = dict(record.get("transactions") or {})
+        transactions = _as_dict(record.get("transactions"))
         transactions[str(transaction_id)] = _transaction_snapshot(booking, include_sensitive)
         record["transactions"] = transactions
         record["booking_count"] = len(transactions)
 
-    original = existing or {}
+    original = source_history
     return history, history != original
 
 
@@ -120,9 +126,13 @@ def prune_customer_history(
     cutoff = (now or datetime.now(UTC)) - timedelta(days=90 if retention == "90_days" else 365)
     pruned: dict[str, Any] = {}
     for customer_id, raw_record in history.items():
+        if not isinstance(raw_record, dict):
+            continue
         record = dict(raw_record)
         transactions = {}
-        for txn_id, raw_txn in dict(record.get("transactions") or {}).items():
+        for txn_id, raw_txn in _as_dict(record.get("transactions")).items():
+            if not isinstance(raw_txn, dict):
+                continue
             txn = dict(raw_txn)
             timestamp = parse_iso_datetime(
                 txn.get("booking_end")
@@ -169,8 +179,12 @@ def export_customer_history(history: dict[str, Any], output_format: str) -> str:
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for customer_id, record in sorted(history.items()):
-        customer = dict(record.get("customer") or {})
-        for transaction_id, txn in sorted(dict(record.get("transactions") or {}).items()):
+        if not isinstance(record, dict):
+            continue
+        customer = _as_dict(record.get("customer"))
+        for transaction_id, txn in sorted(_as_dict(record.get("transactions")).items()):
+            if not isinstance(txn, dict):
+                continue
             writer.writerow(
                 {
                     "customer_id": customer_id,

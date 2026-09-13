@@ -18,6 +18,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio aiohttp
+          pip install pytest pytest-asyncio pytest-cov aiohttp voluptuous
       - name: Run unit tests
-        run: pytest tests -q
+        run: >-
+          pytest tests -q
+          --cov=lth_pkg.auto_review
+          --cov=lth_pkg.customer_history
+          --cov=lth_pkg.message_archive
+          --cov=lth_pkg.services
+          --cov-report=term-missing
+          --cov-fail-under=80

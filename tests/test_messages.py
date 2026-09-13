@@ -152,6 +152,43 @@ async def test_incremental_messages_stop_at_known_newest_first_boundary():
         ]
     }
     api = _api([_Resp(page)])
-    messages, complete = await api.get_messages_incremental("TXN1", frozenset({"known"}))
+    messages, complete, anchor = await api.get_messages_incremental("TXN1", frozenset({"known"}))
     assert complete is True
+    assert anchor is None
     assert [message["id"] for message in messages] == ["new-2", "new-1"]
+
+
+@pytest.mark.asyncio
+async def test_partial_message_backfill_resumes_after_oldest_stable_anchor() -> None:
+    """A capped first pass must continue behind its oldest page on the next pass."""
+    pages = [
+        {"data": [_msg(f"page-{page}-message-{index}", "U_cust") for index in range(100)]}
+        for page in range(1, 5)
+    ]
+    first_api = _api([_Resp(page) for page in pages[:3]])
+
+    first, first_complete, first_anchor = await first_api.get_messages_incremental(
+        "TXN1", max_pages=3
+    )
+
+    assert first_complete is False
+    assert first_anchor == "page-3-message-99"
+    assert len(first) == 300
+
+    known_ids = frozenset(message["id"] for message in first)
+    final_page = {"data": pages[3]["data"][:25]}
+    resumed_api = _api([_Resp(page) for page in [*pages[:3], final_page]])
+
+    resumed, resumed_complete, resumed_anchor = await resumed_api.get_messages_incremental(
+        "TXN1",
+        known_ids,
+        max_pages=3,
+        resume_after_id=first_anchor,
+    )
+
+    assert resumed_complete is True
+    assert resumed_anchor is None
+    assert [message["id"] for message in resumed] == [
+        f"page-4-message-{index}" for index in range(25)
+    ]
+    assert len(resumed_api._session.calls) == 4

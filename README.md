@@ -88,7 +88,9 @@ Bookings are categorized based on their dates relative to the current time (UTC)
 
 1. Ensure [HACS](https://hacs.xyz/) is installed in your Home Assistant instance
 
-2. Add this repository as a custom repository in HACS:
+2. Until this integration is included in HACS's default repository list, add it
+   as a custom repository:
+
    - Open HACS in Home Assistant
    - Click on **Integrations**
    - Click the three dots menu (top right) and select **Custom repositories**
@@ -104,6 +106,9 @@ Bookings are categorized based on their dates relative to the current time (UTC)
 
 6. Search for "Local Trailer Hire" and follow the configuration flow
 
+Home Assistant must be fully restarted after every HACS install or update so it
+loads the new Python files. Reloading only the integration is not sufficient.
+
 #### One-Click Install
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=HallyAus&repository=localtrailerhire&category=integration)
@@ -118,16 +123,20 @@ Just two things — the same email and password you log in with on
 - **Email**: Your LocalTrailerHire account email
 - **Password**: Your LocalTrailerHire account password
 
-That's it. The integration handles the marketplace client ID and OAuth
-token refresh automatically. If you'd rather not store your password,
-you can paste a refresh token instead — but for most people email +
-password is the easiest path.
+That's it. The integration exchanges the password for a rotating refresh token
+and then removes the password from Home Assistant's config entry. You can also
+paste an existing refresh token instead of entering a password.
 
 ### Options
 
+Open **Settings** → **Devices & services** → **Local Trailer Hire** →
+**Configure** to change these options. If **Configure** is missing immediately
+after an install or update, restart Home Assistant, hard-refresh the browser,
+and return to the integration page.
+
 - **Update Interval**: How often to fetch booking data (1-60 minutes, default: 10)
 - **Transaction Transitions**: Leave empty to fetch all transactions (recommended)
-- **Include Sensitive Data**: Show full driver licence and unmasked phone numbers
+- **Include Sensitive Data**: Show full addresses, driver licence details, and unmasked phone numbers
 - **Include Booking Lists**: Show active booking lists in live sensor attributes (off by default; large lists and update timestamps are excluded from recorder history)
 - **Customer/message history retention** *(v1.6.0)*: Keep archives for 90 days, one year, or forever (default, so older customer references are not silently lost)
 - **Archive message content** *(v1.6.0)*: Opt in to persistent, incremental message history (off by default)
@@ -202,7 +211,7 @@ The customer name for the next upcoming booking.
 - `first_name`: Customer's first name
 - `last_name`: Customer's last name
 - `phone`: Customer's phone number (masked if sensitive data disabled)
-- `pickup_address`: Pickup address (if available)
+- `pickup_address`: Pickup address (only when sensitive data is enabled)
 - `pickup_suburb`: Pickup suburb (if available)
 
 #### `sensor.local_trailer_hire_next_booking_payout`
@@ -313,7 +322,9 @@ Bookings with missing dates are omitted.
 
 ## Example Booking Data Structure
 
-Each booking in the `bookings` attribute list contains:
+Each booking in the `bookings` attribute list contains the following shape. The
+full `address` and `pickup_address` fields shown here are omitted unless
+**Include Sensitive Data** is enabled:
 
 ```json
 {
@@ -531,7 +542,7 @@ manual or one-off reviews. For hands-off reviews, use the built-in
 - `sync_message_history`: advances a bounded, persisted conversation backfill cursor (`batch_size`: 1–50).
 - `export_message_history` / `clear_message_history`: export or permanently remove opted-in message content.
 - `auto_review_dry_run`: returns candidate transaction IDs, due-now count, and timestamp without posting.
-- `auto_review_retry_now`: immediately retries one specified candidate or all currently reviewable candidates, bypassing backoff.
+- `auto_review_retry_now`: immediately retries one explicitly specified candidate, bypassing its backoff.
 
 Export services return their data in the Home Assistant service response. In
 Developer Tools → Actions, enable the response display and save the returned
@@ -547,8 +558,8 @@ reliably, with no automation YAML.
 rating and text there too). It is **off by default**.
 
 **How it works:** on each refresh the integration finds past bookings that are
-now reviewable and not yet reviewed, posts the review (trying
-`review-1-by-provider`, falling back to `review-2-by-provider`), and records it
+not terminal or already reviewed, asks Sharetribe which transitions are
+currently offered, posts only an offered provider-review transition, and records it
 so it never posts twice. Because that state is persisted, it **survives Home
 Assistant restarts** — unlike a `delay`-based automation, which silently drops
 the pending review if HA restarts during the (often multi-day) wait between
@@ -566,6 +577,13 @@ sensor (`enabled` / `disabled`). Its attributes include candidate/due counts,
 the next attempt, latest sanitized failure type, totals, and the last successful
 review. Repeated failures and expired authentication also create Home Assistant
 Repairs notifications.
+
+For a safe check before enabling or troubleshooting it, run
+`localtrailerhire.auto_review_dry_run` in **Developer tools** → **Actions**.
+This reports locally eligible transaction IDs without posting a review or
+changing stored state. Do not use `localtrailerhire.auto_review_retry_now` as a
+test: it posts a public review immediately and bypasses normal backoff. The
+action requires one explicit `transaction_id`.
 
 > The older example automation at
 > [`examples/auto_review.yaml`](examples/auto_review.yaml) still works but is
@@ -670,9 +688,35 @@ linked to the integration as a child device. Per-listing entities:
 - `sensor.<title>_price` — daily price in AUD
 - `sensor.<title>_active_bookings` — count of upcoming + in-progress bookings on that listing
 
-New listings are picked up on next integration reload.
+New listings are picked up automatically on the next coordinator refresh.
 
 ## Troubleshooting
+
+### Integration Missing After Install or Update
+
+1. In HACS, confirm **Local Trailer Hire** shows as downloaded.
+2. Perform a full Home Assistant restart. An integration reload does not load
+   newly installed Python modules.
+3. Hard-refresh the browser, then open **Settings** → **Devices & services**.
+4. For a first install, select **Add integration** and search for
+   **Local Trailer Hire**. For an existing entry, open it and select
+   **Configure**.
+5. If it still does not appear, confirm the installed path is
+   `custom_components/localtrailerhire/manifest.json`, then review the Home
+   Assistant startup log for `localtrailerhire` errors.
+
+### Logo Is Missing in HACS
+
+The release includes a valid local `brand/icon.png` plus light and dark logos.
+Home Assistant 2026.3 and newer loads those files on a full restart and displays
+them under **Settings → Devices & services**. Older Home Assistant releases do
+not support repository-local custom-integration branding.
+
+HACS currently has a separate upstream frontend issue: its repository list can
+still request the legacy public brands CDN and show **Icon not available** even
+when Home Assistant is serving the local icon correctly. This is tracked in
+[hacs/integration#5402](https://github.com/hacs/integration/issues/5402); another
+repository change cannot correct that HACS card while the upstream fix is pending.
 
 ### Authentication Issues
 
@@ -701,12 +745,28 @@ Check the `_diagnostics` attribute on the Total Bookings sensor to see the `now_
 
 The integration handles rate limiting automatically with exponential backoff. If you see rate limit warnings, consider increasing the update interval.
 
+### Auto-Review Is Not Posting
+
+1. Open **Settings** → **Devices & services** → **Local Trailer Hire** →
+   **Configure** and confirm auto-review is enabled with the intended rating and
+   text.
+2. Check `sensor.local_trailer_hire_auto_review`. `candidate_count`,
+   `due_now_count`, `next_attempt_at`, and `last_failure` explain whether a
+   review is eligible, waiting for backoff, or failing.
+3. Check **Settings** → **System** → **Repairs** for expired authentication or
+   repeated-failure notifications.
+4. Run `localtrailerhire.auto_review_dry_run` to inspect candidates safely.
+   Bookings outside Sharetribe's review window or already reviewed are skipped.
+5. Use `auto_review_retry_now` only when you intentionally want to publish a
+   review, and supply the single `transaction_id` returned by the dry run.
+
 ## API Details
 
 This integration uses the Sharetribe Flex Marketplace API:
 
 - **Auth**: `POST https://flex-api.sharetribe.com/v1/auth/token`
 - **Transactions**: `GET .../v1/api/transactions/query`
+- **Offered transitions**: `GET .../v1/api/process_transitions/query?transactionId=...`
 - **Transition**: `POST .../v1/api/transactions/transition` (accept/decline/review)
 - **Send message**: `POST .../v1/api/messages/send`
 - **Read messages**: `GET .../v1/api/messages/query` *(v1.4.0)*
@@ -720,15 +780,31 @@ The integration uses JSON format (`Accept: application/json`) for queries and Tr
 
 ## Security
 
-- Credentials are stored securely in Home Assistant's config entry storage
+- Email and refresh token are stored in Home Assistant's config-entry storage.
+  A supplied password is discarded after the first successful token exchange.
+  Home Assistant's `.storage` files are JSON on disk and are not
+  application-encrypted; anyone with access to the host or an unencrypted
+  backup may be able to read them.
 - Tokens are never logged
 - Refresh tokens are automatically renewed and stored
-- Password credentials are only used when refresh token is unavailable
-- Sensitive customer data (licence, phone) can be masked via options
-- Customer history is retained per config entry; disabling sensitive data
-  scrubs stored phone, address, licence and referrer details on the next refresh
-- Retention is configurable, and services can export or permanently clear both
-  customer and opted-in message archives
+- Existing installations automatically scrub a previously retained password
+  after their next successful authentication
+- Sensitive customer data (address, licence, phone) is omitted or masked via options
+- Customer history is stored as plaintext JSON in a per-config-entry Home
+  Assistant `.storage` file. By default, customer names, booking references,
+  and public hire/review statistics are retained forever; choose 90 days or one
+  year under **Configure** if indefinite retention is not appropriate.
+- Full phone, address, licence, and referrer values are retained only when
+  **Include sensitive customer details** is enabled. Disabling it scrubs those
+  stored values on the next successful refresh.
+- Message-body archiving is off by default. Turning it off stops further
+  archiving but does not substitute for deletion; use
+  `localtrailerhire.clear_message_history` to permanently remove existing
+  message content.
+- Export actions return plaintext JSON or CSV in the Home Assistant action
+  response. Store exports and Home Assistant backups with access controls and
+  encryption appropriate for customer records.
+- Clear-history actions are permanent and cannot be undone
 - API error response bodies and customer names are not written to logs
 
 ## License
@@ -738,3 +814,6 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please open an issue or pull request on GitHub.
+
+Maintainers preparing a release or HACS default-list submission should follow
+the [HACS default submission checklist](docs/HACS_DEFAULT_SUBMISSION.md).
