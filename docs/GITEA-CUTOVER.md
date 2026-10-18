@@ -24,6 +24,14 @@ The original daily06:00UTC validation cadence remains deferred until complete
 initial Gitea validation and artifact proof pass. No cron is activated by this
 initial enrollment. No actual marketplace/customer/HA request is performed.
 
+Initial498 now passed all original unit/coverage gates (88.28% against the80%
+threshold), official hassfest and private packaging. Independent stored-artifact
+verification matched all25ZIP files to exact VM300 source, and identical public
+recovery was inert. The original daily06:00UTC cadence is now enrolled for these
+same unchanged private CI jobs. Registration and a real scheduled firing remain
+separate evidence; no public HACS, release, installed integration or live
+marketplace behavior is certified by this source route.
+
 Pinned test-tool versions were checked against primary PyPI release metadata:
 https://pypi.org/project/pytest/9.1.1/
 https://pypi.org/project/pytest-asyncio/1.4.0/
