@@ -1,9 +1,20 @@
-## GitHub source control and self-hosted runner (current policy, 2026-10-22)
+## Canonical GitHub source and self-hosted Actions (2026-10-22)
 
-- **Canonical repository:** `https://github.com/HallyAus/localtrailerhire`. GitHub is the source of truth. Commit, push, open pull requests and publish tags/releases to GitHub; do not publish to former Git servers or maintain a secondary recovery mirror.
-- **Branch and remote:** Use the repository's current GitHub default/production branch, verify `git remote -v` before pushing, preserve uncommitted work and never force-push over newer commits.
-- **CI/CD:** A self-hosted GitHub Actions runner is available. Prefer it for eligible jobs when the repository has a configured workflow; use the exact runner labels verified in repository settings or existing workflows. Do not assume the runner's OS, permissions, online status or available secrets, and do not expose credentials to untrusted contributions.
-- **Validation and deployment:** Keep the project's existing tests, security checks, branch protections, release approvals, staging/acceptance and production verification. A GitHub push or green build is not proof of production deployment. Do not silently enable or bypass deployment triggers, and never infer that Vercel, Proxmox or another target deploys automatically.
-- **Precedence:** This section overrides older hosting, mirror, disabled-Actions and publishing instructions elsewhere in this file. Preserve non-hosting project-specific safety rules.
+GitHub `https://github.com/HallyAus/localtrailerhire` is authoritative for source, commits and releases. Push to the verified GitHub remote and current project branch, not any retired internal forge or recovery mirror. Preserve local work and never force push. Use the configured self-hosted GitHub Actions runner where available, checking actual job labels, runner trust and workflow configuration. Keep existing release gates, production settings, credentials boundaries, rollback, stage/promotion and live validation. Neither a push nor green CI alone proves deployment. Historical source-control instructions below are superseded.
 
 # Personal Local Trailer Hire integration
+
+- GitHub HallyAus/localtrailerhire is the authoritative source. Preserve main, tags, local work and public HACS compatibility URLs until a verified replacement exists.
+- Only the configured personal self-hosted runner validates this source. Preserve the original Python3.12
+  complete unit suite, four-module coverage and80% threshold, plus official
+  hassfest. Block external test sockets and use existing scripted fake clients.
+- Never log in to Sharetribe/LocalTrailerHire, send messages/reviews, accept or
+  cancel bookings, change listings, copy customer archives, operate HA or use
+  actual tokens as a CI/migration test. Existing auto-review and booking/service
+  behavior must remain unchanged; CI is not permission to enable those actions.
+- Retain a private exact-source candidate only after unit and metadata checks.
+  HACS validation is separately manual and requires the approved repository-only
+  HACS_PUBLIC_READ_TOKEN and identical public source. Never send a retired-server token
+  to GitHub or ignore original release checks. Do not create tags/releases,
+  publish, install/reload the integration or restart HA by default.
+- Use existing plans and allowances; leave M4T, Proxmox.99 and Kidde alone.
