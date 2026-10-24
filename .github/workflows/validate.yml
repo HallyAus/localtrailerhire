@@ -3,28 +3,41 @@ name: Validate
 on:
   push:
     branches: [main]
-  pull_request:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   hassfest:
     name: Hassfest
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, localtrailerhire]
+    container:
+      image: ghcr.io/home-assistant/hassfest@sha256:2dce3c5423a600e7965e5a3d5a95e0707e8452fb001ab2b5d0602099bbecba92
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Run hassfest
-        uses: home-assistant/actions/hassfest@master
+        run: /usr/src/homeassistant/script/hassfest/docker/entrypoint.sh
 
   hacs:
     name: HACS
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, localtrailerhire]
+    container:
+      image: ghcr.io/hacs/action@sha256:2cbf62255159613a0e2f07decda684007f4d3d99abed5d9820a2818e02dbb98a
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Run HACS validation
-        uses: hacs/action@main
-        with:
-          category: integration
+      - name: Validate exact public source with HACS
+        env:
+          INPUT_GITHUB_TOKEN: ${{ secrets.HACS_PUBLIC_READ_TOKEN }}
+          INPUT_COMMENT: 'false'
+          REPOSITORY: HallyAus/localtrailerhire
+          CATEGORY: integration
+          REPOSITORY_REF: ${{ github.sha }}
+        run: |
+          set -eu
+          test -n "${INPUT_GITHUB_TOKEN:?Configure the repo-scoped HACS_PUBLIC_READ_TOKEN secret}"
+          unset GITHUB_TOKEN GITEA_TOKEN
+          cd /hacs
+          python3 /hacs/action.py

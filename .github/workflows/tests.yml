@@ -3,25 +3,36 @@ name: Tests
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   pytest:
     name: pytest
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, localtrailerhire]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov aiohttp voluptuous
+        run: >-
+          python -m pip install
+          pytest==9.1.1
+          pytest-asyncio==1.4.0
+          pytest-cov==7.1.0
+          pytest-socket==0.8.1
+          aiohttp==3.14.5
+          voluptuous==0.16.0
       - name: Run unit tests
         run: >-
           pytest tests -q
+          --disable-socket
+          --allow-hosts=127.0.0.1,::1
+          --allow-unix-socket
           --cov=lth_pkg.auto_review
           --cov=lth_pkg.customer_history
           --cov=lth_pkg.message_archive

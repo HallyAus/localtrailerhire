@@ -9,63 +9,126 @@ on:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, localtrailerhire]
     permissions:
       checks: read
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Determine tag
         id: tag
         run: |
-          VER=$(python -c 'import json; print(json.load(open("custom_components/localtrailerhire/manifest.json"))["version"])')
-          TAG="v$VER"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: $TAG"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path("custom_components/localtrailerhire/manifest.json").read_text())
+          tag = f"v{manifest['version']}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"tag={tag}\n")
+          print(f"Resolved tag: {tag}")
+          PY
 
       - name: Require successful validation for this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for CHECK in pytest Hassfest HACS; do
-            CONCLUSION=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
-              --jq ".check_runs[] | select(.name == \"$CHECK\") | .conclusion" | head -n 1)
-            if [ "$CONCLUSION" != "success" ]; then
-              echo "Required check $CHECK is not successful for $GITHUB_SHA"
-              exit 1
-            fi
-          done
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          token = os.environ["GH_TOKEN"]
+          url = f"https://api.github.com/repos/{repository}/commits/{sha}/check-runs?per_page=100"
+          request = urllib.request.Request(url, headers={
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+          if payload.get("total_count", 0) > len(payload.get("check_runs", [])):
+              raise SystemExit("Check-run response was truncated; refusing release")
+
+          required = ("pytest", "Hassfest", "HACS")
+          runs = payload.get("check_runs", [])
+          for name in required:
+              matches = [run for run in runs if run.get("name") == name]
+              if not matches:
+                  raise SystemExit(f"Required check {name} is missing for {sha}")
+              latest = max(matches, key=lambda run: run.get("started_at") or "")
+              if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+                  raise SystemExit(f"Required check {name} is not successful for {sha}")
+              print(f"Required check passed: {name}")
+          PY
 
       - name: Check release and tag state
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
-            TAG_COMMIT=$(git rev-list -n 1 "$TAG")
-            if [ "$TAG_COMMIT" != "$GITHUB_SHA" ]; then
-              echo "Existing tag $TAG points to $TAG_COMMIT, not validated commit $GITHUB_SHA"
-              exit 1
-            fi
-          fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists; skipping creation."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          tag = os.environ["TAG"]
+          sha = os.environ["GITHUB_SHA"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          local_tag = subprocess.run(
+              ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}"],
+              check=False, capture_output=True, text=True,
+          )
+          if local_tag.returncode not in (0, 1):
+              raise SystemExit("Could not reliably inspect local tag state")
+          if local_tag.returncode == 0:
+              tag_commit = subprocess.run(
+                  ["git", "rev-list", "-n", "1", tag],
+                  check=True, capture_output=True, text=True,
+              ).stdout.strip()
+              if tag_commit != sha:
+                  raise SystemExit(f"Existing tag {tag} points to a different commit")
+
+          url = f"https://api.github.com/repos/{repository}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+          request = urllib.request.Request(url, headers={
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          try:
+              with urllib.request.urlopen(request, timeout=30):
+                  exists = True
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              exists = False
+          if exists and local_tag.returncode != 0:
+              raise SystemExit(f"Release {tag} exists but its local tag ref was not fetched")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"exists={'true' if exists else 'false'}\n")
+          print(f"Release {tag} {'already exists' if exists else 'does not exist'}")
+          PY
 
       - name: Create release
         if: steps.check.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           target_commitish: ${{ github.sha }}
+          token: ${{ github.token }}
           generate_release_notes: true
           body: |
             Home Assistant integration for the LocalTrailerHire (Sharetribe Flex)
