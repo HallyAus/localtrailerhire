@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -1058,10 +1058,8 @@ class EarningsLast30DaysSensor(_EarningsWindowSensor):
         super().__init__(coordinator, entry, "earnings_last_30_days_aud", "Earnings Last 30 Days")
 
     def _window(self) -> tuple[datetime, datetime]:
-        from datetime import timedelta as _td  # local import to avoid module-level shuffle
-
         now = datetime.now(UTC)
-        return now - _td(days=30), now + _td(days=1)
+        return now - timedelta(days=30), now + timedelta(days=1)
 
 
 class EarningsMonthToDateSensor(_EarningsWindowSensor):
@@ -1075,9 +1073,7 @@ class EarningsMonthToDateSensor(_EarningsWindowSensor):
     def _window(self) -> tuple[datetime, datetime]:
         now = datetime.now(UTC)
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        from datetime import timedelta as _td
-
-        return start, now + _td(days=1)
+        return start, now + timedelta(days=1)
 
 
 class EarningsYearToDateSensor(_EarningsWindowSensor):
@@ -1091,9 +1087,7 @@ class EarningsYearToDateSensor(_EarningsWindowSensor):
     def _window(self) -> tuple[datetime, datetime]:
         now = datetime.now(UTC)
         start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        from datetime import timedelta as _td
-
-        return start, now + _td(days=1)
+        return start, now + timedelta(days=1)
 
 
 # =============================================================================

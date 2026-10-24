@@ -6,7 +6,7 @@ Automations & Scenes → Create automation → ⋮ → Edit in YAML).
 
 | File | What it does | Triggers on |
 |---|---|---|
-| [`auto_message.yaml`](auto_message.yaml) | Sends a friendly welcome message to the customer when a booking is confirmed (pickup hint + your contact number). | `localtrailerhire_booking_confirmed` |
+| [`auto_message.yaml`](auto_message.yaml) | Sends a friendly welcome message with pickup and return times when a booking is confirmed. | `localtrailerhire_booking_confirmed` |
 | [`auto_review.yaml`](auto_review.yaml) | Waits until `booking_end + 4 hours`, then posts a 5-star provider review automatically. | `localtrailerhire_booking_confirmed` |
 
 Both rely on events fired by the integration's coordinator on every
@@ -23,7 +23,9 @@ after booking end. No interaction needed between them.
 ## Personalising
 
 - **Auto-message:** edit the `message` template in `auto_message.yaml` to
-  match your tone, drop your phone number, or strip the Apple Maps caveat.
+  match your tone, update your contact number, or change the directions note.
+  Pickup and return timestamps are converted to Home Assistant's configured
+  local time zone before they are sent.
 - **Auto-review:** edit `review_content` in `auto_review.yaml` and the
   `(4 * 3600)` buffer to push the review later if you want more buffer
   for late returns. Sharetribe enforces a review window after delivery,

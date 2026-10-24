@@ -89,12 +89,30 @@ views:
             message(s) awaiting your reply
 
       - type: markdown
+        title: Latest message
+        content: >
+          {% set latest = state_attr('sensor.local_trailer_hire_awaiting_replies', 'latest_message') %}
+          {% if latest %}
+          {% set sent_at = as_timestamp(latest.created_at, default=none) %}
+          **{{ latest.listing_title or 'Booking' }}**
+
+          {{ sent_at | timestamp_custom('%A, %d %B at %I:%M %p', true) if sent_at is not none else 'Time unavailable' }}
+
+          > {{ latest.content | default('No message text', true) | replace('\n', '\n> ') }}
+          {% else %}
+          *No recent messages found in active bookings.*
+          {% endif %}
+
+      - type: markdown
         title: Recent reviews
         content: >
           {% for r in state_attr('sensor.local_trailer_hire_rating',
           'recent_reviews') or [] %}
+          {% set review_date = as_timestamp(r.created_at, default=none) %}
 
-          ⭐ **{{ r.rating }}** — {{ r.content }}
+          ⭐ **{{ r.rating }}/5** · {{ r.content or 'No written review' }}
+
+          {{ review_date | timestamp_custom('%d %b %Y', true) if review_date is not none else '' }}
 
           {% endfor %}
 
@@ -138,7 +156,8 @@ views:
           | Listing | Customer | Pickup | Payout | Transaction |
           | --- | --- | --- | --- | --- |
           {% for p in pending -%}
-          | {{ p.listing_title }} | {{ p.customer }} | {{ p.booking_start }} | ${{ '%.2f'|format(p.payout_total_aud or 0) }} | `{{ p.transaction_id }}` |
+          {% set pickup_at = as_timestamp(p.booking_start, default=none) %}
+          | {{ p.listing_title }} | {{ p.customer }} | {{ pickup_at | timestamp_custom('%a, %d %b at %I:%M %p', true) if pickup_at is not none else 'Time unavailable' }} | ${{ '%.2f'|format(p.payout_total_aud or 0) }} | `{{ p.transaction_id }}` |
           {% endfor %}
           {% else %}
           *No pending requests right now.*

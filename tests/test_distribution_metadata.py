@@ -35,7 +35,7 @@ def test_manifest_has_hacs_required_fields() -> None:
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     assert manifest["domain"] == COMPONENT.name
-    assert manifest["version"] == "1.6.1"
+    assert manifest["version"] == "1.6.2"
     assert f"## {manifest['version']}" in changelog
     for key in (
         "codeowners",

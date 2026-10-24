@@ -300,7 +300,7 @@ marketplace API has no per-message "read" flag.)
 
 **Attributes:**
 - `transaction_ids`: The transactions awaiting your reply
-- `latest_message`: The newest message across the scanned bookings (`content`, `sender_id`, `transaction_id`, `listing_title`)
+- `latest_message`: The newest message across the scanned bookings (`content`, `sender_id`, `transaction_id`, `listing_title`, `created_at`). `created_at` is the original marketplace timestamp; use Home Assistant's local-time conversion when displaying it.
 - `last_update`: Timestamp of last data refresh
 
 ## Calendar
@@ -376,8 +376,10 @@ automation:
         data:
           title: "New Booking!"
           message: >
+            {% set next_start = as_timestamp(states('sensor.local_trailer_hire_next_booking_start'), default=none) %}
             New booking from {{ state_attr('sensor.local_trailer_hire_next_booking_start', 'customer_name') }}
-            starting {{ states('sensor.local_trailer_hire_next_booking_start') }}
+            starting {{ next_start | timestamp_custom('%A, %d %B at %I:%M %p', true)
+              if next_start is not none else 'at a time to be confirmed' }}
 ```
 
 ### Reminder before pickup

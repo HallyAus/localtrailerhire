@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.2
+
+- Convert booking timestamps to Home Assistant's configured local timezone in
+  the confirmation-message example, and show pickup and return times clearly.
+- Improve the sample dashboard's latest-message, review, and pending-pickup
+  formatting, including local-time display for message and booking dates.
+
 ## 1.6.1
 
 - Verify Sharetribe's currently offered process transitions before posting an

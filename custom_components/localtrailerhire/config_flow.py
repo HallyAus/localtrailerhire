@@ -104,8 +104,8 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     else:
                         errors["base"] = error_code or "invalid_auth"
 
-                except Exception as err:
-                    _LOGGER.exception("Unexpected error during config: %s", err)
+                except Exception:
+                    _LOGGER.exception("Unexpected error during config")
                     errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -259,8 +259,8 @@ class LocalTrailerHireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 errors["base"] = error_code or "invalid_auth"
 
-            except Exception as err:
-                _LOGGER.exception("Reauth error: %s", err)
+            except Exception:
+                _LOGGER.exception("Reauth error")
                 errors["base"] = "unknown"
 
         return self.async_show_form(

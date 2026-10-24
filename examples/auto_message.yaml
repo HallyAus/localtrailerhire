@@ -2,7 +2,7 @@
 #
 # Sends a friendly welcome message to the customer the moment a booking is
 # confirmed (instant-book, payment-confirmed, or expired-refundable-period).
-# Includes pickup hint and your contact number.
+# Includes pickup and return times, a directions hint, and your contact number.
 #
 # Drop this into your Home Assistant `automations.yaml` (or paste it via
 # Settings → Automations & Scenes → Create automation → three-dots → Edit
@@ -13,7 +13,7 @@
 #      integration whenever a booking transitions to a confirmed state.
 #   2. Calls `localtrailerhire.send_message` with a templated message that
 #      includes the customer's first name, the listing title, and the
-#      booking start date.
+#      pickup and return times in Home Assistant's configured local time zone.
 #   3. The integration's idempotency tracking (`mark_message_sent`) prevents
 #      duplicate sends for the same transaction.
 #
@@ -37,17 +37,27 @@ actions:
   - action: localtrailerhire.send_message
     data:
       transaction_id: "{{ trigger.event.data.transaction_id }}"
-      message: >-
+      message: |
+        {% set booking_start = as_timestamp(
+          trigger.event.data.booking_start | default('', true), default=none
+        ) %}
+        {% set booking_end = as_timestamp(
+          trigger.event.data.booking_end | default('', true), default=none
+        ) %}
         Hi {{ trigger.event.data.customer_first_name | default('there', true) }},
 
-        Thank you for booking {{ trigger.event.data.listing_title | default('your trailer', true) }}!
+        Thanks for booking {{ trigger.event.data.listing_title | default('your trailer', true) }}!
 
-        Your booking starts on {{
-          (trigger.event.data.booking_start | default('', true))[:10]
-          if (trigger.event.data.booking_start | default('', true)) else
-          'the scheduled date'
-        }}.
+        BOOKING DETAILS
+        Pickup: {{
+          booking_start | timestamp_custom('%A, %d %B at %I:%M %p', true)
+          if booking_start is not none else 'time to be confirmed'
+        }}
+        Return: {{
+          booking_end | timestamp_custom('%A, %d %B at %I:%M %p', true)
+          if booking_end is not none else 'time to be confirmed'
+        }}
 
-        Please use Google Maps to get to the property as Apple Maps does not work.
+        Please use Google Maps for directions to the property.
 
-        Any issues please reach out to me on 0468 808 706
+        If you need help, call me on 0468 808 706.
