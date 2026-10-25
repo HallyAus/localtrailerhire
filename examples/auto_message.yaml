@@ -37,13 +37,13 @@ actions:
   - action: localtrailerhire.send_message
     data:
       transaction_id: "{{ trigger.event.data.transaction_id }}"
-      message: |
-        {% set booking_start = as_timestamp(
+      message: |-
+        {%- set booking_start = as_timestamp(
           trigger.event.data.booking_start | default('', true), default=none
-        ) %}
-        {% set booking_end = as_timestamp(
+        ) -%}
+        {%- set booking_end = as_timestamp(
           trigger.event.data.booking_end | default('', true), default=none
-        ) %}
+        ) -%}
         Hi {{ trigger.event.data.customer_first_name | default('there', true) }},
 
         Thanks for booking {{ trigger.event.data.listing_title | default('your trailer', true) }}!

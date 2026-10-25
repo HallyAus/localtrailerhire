@@ -54,6 +54,7 @@ def test_booking_message_formats_utc_dates_in_sydney_time() -> None:
             "booking_end": "2026-07-02T05:00:00Z",
         }
     )
+    assert winter.startswith("Hi there,")
     assert "Pickup: Thursday, 02 July at 12:30 AM" in winter
     assert "Return: Thursday, 02 July at 03:00 PM" in winter
 
